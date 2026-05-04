@@ -9,7 +9,7 @@ let ws = null;
 
 function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${protocol}//${window.location.host}/ws/${clientId}/${userName}`);
+    ws = new WebSocket(`${protocol}//${window.location.host}/ws/${encodeURIComponent(clientId)}/${encodeURIComponent(userName)}`);
     
     ws.onmessage = (event) => {
         const data = JSON.parse(event.data);

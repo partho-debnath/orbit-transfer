@@ -124,7 +124,12 @@ async def download_file(transfer_id: str):
         headers={"Content-Disposition": f"attachment; filename={transfer['filename']}"}
     )
 
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+@app.get("/")
+async def get_index():
+    with open("static/index.html", "r") as f:
+        return HTMLResponse(content=f.read(), status_code=200)
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
     import uvicorn
