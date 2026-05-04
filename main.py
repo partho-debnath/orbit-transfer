@@ -121,8 +121,14 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
                 group_id = message["group_id"]
                 member_id = message["member_id"]
                 if group_id in manager.groups and manager.groups[group_id]["creator_id"] == client_id:
+                    removed = False
                     if member_id in manager.groups[group_id]["members"]:
                         manager.groups[group_id]["members"].remove(member_id)
+                        removed = True
+                    if member_id in manager.groups[group_id]["pending"]:
+                        manager.groups[group_id]["pending"].remove(member_id)
+                        removed = True
+                    if removed:
                         await manager.broadcast_group_update(group_id)
 
             elif message["type"] == "delete_group":
