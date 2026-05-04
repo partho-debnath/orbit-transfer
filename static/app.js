@@ -6,15 +6,16 @@ document.getElementById('username').value = userName;
 
 let selectedTargetId = null;
 let ws = null;
+let transferRoles = {}; // Track if we are 'sender' or 'receiver' for each transfer
 
 function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${protocol}//${window.location.host}/ws/${encodeURIComponent(clientId)}/${encodeURIComponent(userName)}`);
-    
+
     ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
         console.log("WS Message:", data);
-        
+
         if (data.type === 'user_list') {
             updateUserList(data.users);
         } else if (data.type === 'incoming_transfer') {
@@ -51,7 +52,7 @@ function selectUser(user) {
     document.getElementById('target-name').innerText = user.name;
     document.getElementById('no-target').style.display = 'none';
     document.getElementById('transfer-zone').style.display = 'block';
-    
+
     // Update UI selection
     document.querySelectorAll('.user-item').forEach(el => el.classList.remove('active'));
     event.currentTarget.classList.add('active');
@@ -61,7 +62,7 @@ function selectUser(user) {
 document.getElementById('username').onchange = (e) => {
     userName = e.target.value;
     localStorage.setItem('orbit_user_name', userName);
-    ws.send(JSON.stringify({type: 'change_name', name: userName}));
+    ws.send(JSON.stringify({ type: 'change_name', name: userName }));
 };
 
 // File Handlers
@@ -95,26 +96,27 @@ dropZone.ondrop = (e) => {
 function handleFile(file) {
     if (!selectedTargetId) return;
     pendingFile = file;
-    
+
     ws.send(JSON.stringify({
         type: 'transfer_request',
         target_id: selectedTargetId,
         filename: file.name,
         size: file.size
     }));
-    
+
     showTransferStatus('request', 'waiting', `Asking ${document.getElementById('target-name').innerText} to accept...`);
 }
 
 async function startUpload(transferId) {
     if (!pendingFile) return;
-    
+
+    transferRoles[transferId] = 'sender';
     // Clear the request card
     const requestCard = document.getElementById('transfer-request');
     if (requestCard) requestCard.remove();
-    
+
     showTransferStatus(transferId, 'uploading', `Sending ${pendingFile.name}...`, 0, pendingFile.size);
-    
+
     const formData = new FormData();
     // We don't use conventional FormData because we want to stream from the body directly
     // but browser support for fetch streaming body is getting better.
@@ -128,7 +130,8 @@ async function startUpload(transferId) {
         });
 
         if (response.ok) {
-            showTransferStatus(transferId, 'done', `Finished sending ${pendingFile.name}`);
+            const msg = transferRoles[transferId] === 'sender' ? 'File transfer complete' : 'File download complete';
+            showTransferStatus(transferId, 'done', msg);
         }
     } catch (err) {
         console.error("Upload failed", err);
@@ -156,8 +159,10 @@ function acceptTransfer(transferId, btn, size) {
         type: 'transfer_accept',
         transfer_id: transferId
     }));
-    
+
+    transferRoles[transferId] = 'receiver';
     btn.parentElement.parentElement.id = `transfer-${transferId}`;
+    lastProgress[transferId] = { time: Date.now(), bytes: 0 };
     btn.parentElement.parentElement.innerHTML = `
         <div style="display: flex; justify-content: space-between;">
             <p><strong>Receiving File...</strong></p>
@@ -171,7 +176,7 @@ function acceptTransfer(transferId, btn, size) {
             <span id="size-${transferId}">0 / ${formatBytes(size)}</span>
         </div>
     `;
-    
+
     const a = document.createElement('a');
     a.href = `/download/${transferId}`;
     a.style.display = 'none';
@@ -186,7 +191,9 @@ function updateDownloadProgress(data) {
     if (data.status === 'complete') {
         const el = document.getElementById(`transfer-${data.transfer_id}`);
         if (el) {
-            el.innerHTML = `<p style="color: var(--accent)"><i class="fas fa-check-circle"></i> Download Finished!</p>`;
+            const role = transferRoles[data.transfer_id];
+            const msg = role === 'sender' ? 'File transfer complete' : 'File download complete';
+            el.innerHTML = `<p style="color: var(--accent)"><i class="fas fa-check-circle"></i> ${msg}!</p>`;
             setTimeout(() => el.remove(), 5000);
         }
         return;
@@ -201,20 +208,20 @@ function updateDownloadProgress(data) {
         pb.style.width = `${data.percentage}%`;
         percent.innerText = `${data.percentage}%`;
         size.innerText = `${formatBytes(data.bytes_sent)} / ${formatBytes(data.total_size)}`;
-        
+
         // Calculate rate
         const now = Date.now();
         if (!lastProgress[data.transfer_id]) {
             lastProgress[data.transfer_id] = { time: now, bytes: data.bytes_sent };
         }
-        
+
         const last = lastProgress[data.transfer_id];
         const deltaBytes = data.bytes_sent - last.bytes;
         const deltaTime = (now - last.time) / 1000;
-        
+
         if (deltaTime >= 0.5 && deltaBytes > 0) {
             const kbps = (deltaBytes / 1024) / deltaTime;
-            rate.innerText = kbps > 1024 ? `${(kbps/1024).toFixed(2)} MB/s` : `${kbps.toFixed(1)} KB/s`;
+            rate.innerText = kbps > 1024 ? `${(kbps / 1024).toFixed(2)} MB/s` : `${kbps.toFixed(1)} KB/s`;
             lastProgress[data.transfer_id] = { time: now, bytes: data.bytes_sent };
         }
     }
@@ -223,16 +230,16 @@ function updateDownloadProgress(data) {
 function showTransferStatus(transferId, status, text, progress = null, totalSize = 0) {
     const container = document.getElementById('status-container');
     let card = document.getElementById(`transfer-${transferId}`);
-    
+
     if (!card) {
         card = document.createElement('div');
         card.id = `transfer-${transferId}`;
         card.className = 'transfer-card';
         container.appendChild(card);
     }
-    
+
     const displaySize = totalSize > 0 ? `0 / ${formatBytes(totalSize)}` : '0 / 0';
-    
+
     card.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: start;">
             <p style="font-weight: 600;">${status === 'done' ? 'Success' : 'Transfer Progress'}</p>
@@ -246,7 +253,7 @@ function showTransferStatus(transferId, status, text, progress = null, totalSize
         </div>
         <p style="font-size: 0.7rem; color: var(--text-muted); margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 5px;">Date: ${new Date().toLocaleTimeString()}</p>
     `;
-    
+
     if (status === 'done') {
         setTimeout(() => card.remove(), 5000);
     }
