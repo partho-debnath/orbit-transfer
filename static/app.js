@@ -79,7 +79,9 @@ function updateGroupList(groups) {
         li.innerHTML = `
             <div style="display: flex; flex-direction: column;">
                 <span><i class="fas fa-layer-group"></i> ${group.name}</span>
-                <small style="font-size: 0.65rem; color: var(--text-muted);">${group.members.length} members</small>
+                <small style="font-size: 0.65rem; color: var(--text-muted);">
+                    ${group.members.length} members ${group.pending && group.pending.length > 0 ? `(${group.pending.length} pending)` : ''}
+                </small>
             </div>
             <div style="display:flex; gap: 8px;">
                 ${isCreator ? '<button onclick="event.stopPropagation(); addMemberPrompt(\'' + group.id + '\')" title="Manage Members" style="background:none; border:none; color:var(--accent); cursor:pointer;"><i class="fas fa-user-gear"></i></button>' : ''}
@@ -136,10 +138,10 @@ function addMemberPrompt(groupId) {
     list.appendChild(membersHeading);
 
     if (group.members.length === 0) {
-        list.innerHTML += '<p style="padding: 10px; color: var(--text-muted); font-size: 0.8rem;">No members yet</p>';
+        list.innerHTML += '<p style="padding: 10px; color: var(--text-muted); font-size: 0.8rem;">No active members</p>';
     } else {
         group.members.forEach(mid => {
-            const user = allUsers.find(u => u.id === mid) || { name: `Offline User (${mid.substring(0, 4)})`, id: mid };
+            const user = allUsers.find(u => u.id === mid) || { name: `User (${mid.substring(0, 4)})`, id: mid };
             const div = document.createElement('div');
             div.className = 'modal-user-item';
             div.innerHTML = `
@@ -150,13 +152,34 @@ function addMemberPrompt(groupId) {
         });
     }
 
-    // Show Invite section
+    // Show Pending section
+    if (group.pending && group.pending.length > 0) {
+        const pendingHeading = document.createElement('h4');
+        pendingHeading.style = "font-size: 0.75rem; color: var(--text-muted); margin: 20px 0 10px 0; text-transform: uppercase;";
+        pendingHeading.innerText = "Pending Invitations";
+        list.appendChild(pendingHeading);
+
+        group.pending.forEach(mid => {
+            const user = allUsers.find(u => u.id === mid) || { name: `User (${mid.substring(0, 4)})`, id: mid };
+            const div = document.createElement('div');
+            div.className = 'modal-user-item';
+            div.style.opacity = '0.7';
+            div.innerHTML = `
+                <span>${user.name} <small style="background:var(--warning); color:black; padding:1px 4px; border-radius:4px; font-size:0.6rem; margin-left:5px;">PENDING</small></span>
+                ${isCreator ? `<button class="btn" style="background:var(--text-muted); color:white; padding: 2px 8px; font-size:0.7rem;" onclick="removeMember('${groupId}', '${mid}')">Cancel</button>` : ''}
+            `;
+            list.appendChild(div);
+        });
+    }
+
+    // Invite section heading and logic
     const inviteHeading = document.createElement('h4');
     inviteHeading.style = "font-size: 0.75rem; color: var(--text-muted); margin: 20px 0 10px 0; text-transform: uppercase;";
     inviteHeading.innerText = "Invite Online Users";
     list.appendChild(inviteHeading);
 
-    const availableUsers = allUsers.filter(u => u.id !== clientId && !currentMembers.has(u.id));
+    const pendingMembers = new Set(group.pending || []);
+    const availableUsers = allUsers.filter(u => u.id !== clientId && !currentMembers.has(u.id) && !pendingMembers.has(u.id));
 
     if (availableUsers.length === 0) {
         const p = document.createElement('p');
