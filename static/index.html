@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orbit Transfer | Local File Sharing</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <div class="logo">
+                <h1 style="font-size: 1.5rem; background: linear-gradient(to right, #818cf8, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Orbit Transfer</h1>
+            </div>
+            <div class="profile">
+                <span>You:</span>
+                <input type="text" id="username" placeholder="Your Name">
+            </div>
+        </header>
+        
+        <main>
+            <aside class="user-sidebar">
+                <h3 style="margin-bottom: 20px; font-size: 0.9rem; text-transform: uppercase; color: var(--text-muted);">Users Online</h3>
+                <ul id="user-list" class="user-list">
+                    <!-- Users will be injected here -->
+                </ul>
+            </aside>
+            
+            <section class="content-area">
+                <div id="no-target" class="message">
+                    <i class="fas fa-users" style="font-size: 3rem; margin-bottom: 20px; color: var(--text-muted);"></i>
+                    <p>Select a user from the sidebar to start sharing</p>
+                </div>
+                
+                <div id="transfer-zone" style="display: none; width: 100%;">
+                    <div id="selected-target">Sending to <strong id="target-name">User</strong></div>
+                    <div class="drop-zone" id="drop-zone">
+                        <i class="fas fa-cloud-upload-alt"></i>
+                        <p>Drag & Drop files here or click to browse</p>
+                        <input type="file" id="file-input" style="display: none;">
+                    </div>
+                </div>
+
+                <div id="notifications-container" style="width: 100%; max-width: 400px;"></div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Active Transfer Card Template -->
+    <div id="status-container"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>
