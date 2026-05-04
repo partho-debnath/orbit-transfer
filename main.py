@@ -7,7 +7,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import json
 
-app = FastAPI()
+app = FastAPI(
+    title="Orbit Transfer API",
+    description="A high-performance local network file sharing API using WebSockets and streaming pipes.",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
 # Store active connections: {client_id: {"websocket": WebSocket, "name": str}}
 class ConnectionManager:
@@ -40,6 +46,11 @@ transfers: Dict[str, Dict] = {}
 
 @app.websocket("/ws/{client_id}/{name}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
+    """
+    WebSocket endpoint for real-time presence and signaling.
+    - **client_id**: Unique ID for the client.
+    - **name**: Display name of the user.
+    """
     await manager.connect(websocket, client_id, name)
     try:
         while True:
@@ -87,8 +98,12 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
         manager.disconnect(client_id)
         await manager.broadcast_users()
 
-@app.post("/upload/{transfer_id}")
+@app.post("/upload/{transfer_id}", tags=["File Transfer"])
 async def upload_file(transfer_id: str, request: Request):
+    """
+    Stream a file upload directly to the receiver's queue.
+    The file is not saved to disk at any point.
+    """
     if transfer_id not in transfers:
         raise HTTPException(status_code=404, detail="Transfer not found")
     
@@ -101,8 +116,11 @@ async def upload_file(transfer_id: str, request: Request):
     await transfer["queue"].put(None) # Signal end of stream
     return {"status": "success"}
 
-@app.get("/download/{transfer_id}")
+@app.get("/download/{transfer_id}", tags=["File Transfer"])
 async def download_file(transfer_id: str):
+    """
+    Stream a file download directly from the sender's queue.
+    """
     if transfer_id not in transfers:
         raise HTTPException(status_code=404, detail="Transfer not found")
     
