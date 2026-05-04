@@ -140,61 +140,70 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
                     for cid in all_concerned:
                         await manager.send_user_groups(cid)
 
-            elif message["type"] == "group_transfer_request":
-                group_id = message["group_id"]
-                if group_id in manager.groups:
+            elif message["type"] == "transfer_request":
+                group_id = message.get("group_id")
+                receiver_id = message.get("target_id")
+                transfer_id = str(uuid.uuid4())
+                filename = message["filename"]
+                size = message["size"]
+
+                if group_id and group_id in manager.groups:
                     group = manager.groups[group_id]
-                    transfer_id = str(uuid.uuid4())
                     member_ids = list(group["members"])
                     transfers[transfer_id] = {
                         "queues": {mid: asyncio.Queue(maxsize=10) for mid in member_ids},
-                        "filename": message["filename"],
-                        "size": message["size"],
+                        "filename": filename,
+                        "size": size,
                         "sender_id": client_id,
                         "receiver_ids": member_ids,
                         "accepted_count": 0,
                         "expected_count": len(member_ids),
                         "all_accepted": asyncio.Event(),
                         "is_group": True,
-                        "auto_accept": True # New flag to allow immediate start if all are members
+                        "auto_accept": True,
+                        "upload_done": False
                     }
-                    # If all receivers are already members, we can theoreticaly auto-start
-                    # but the client must perform the 'accept' handshake for state tracking.
-                    # We will mark it as all_accepted immediately because they are joined members? 
-                    # No, the user said "can auto receive". 
-                    # We will still send notification, but the client will auto-accept.
-                    
+                    if not member_ids:
+                        transfers[transfer_id]["all_accepted"].set()
                     notification = json.dumps({
                         "type": "incoming_transfer",
                         "transfer_id": transfer_id,
                         "sender_name": f"Group: {group['name']}",
-                        "filename": message["filename"],
-                        "size": message["size"],
+                        "filename": filename,
+                        "size": size,
                         "is_group": True
                     })
                     for mid in member_ids:
                         await manager.send_personal_message(notification, mid)
+                
+                elif receiver_id:
+                    transfers[transfer_id] = {
+                        "queue": asyncio.Queue(maxsize=10),
+                        "filename": filename,
+                        "size": size,
+                        "sender_id": client_id,
+                        "receiver_id": receiver_id,
+                        "accepted": asyncio.Event(),
+                        "is_group": False,
+                        "upload_done": False
+                    }
+                    notification = json.dumps({
+                        "type": "incoming_transfer",
+                        "transfer_id": transfer_id,
+                        "sender_name": manager.active_connections[client_id]["name"],
+                        "filename": filename,
+                        "size": size,
+                        "is_group": False
+                    })
+                    await manager.send_personal_message(notification, receiver_id)
 
-            elif message["type"] == "transfer_request":
-                receiver_id = message["target_id"]
-                transfer_id = str(uuid.uuid4())
-                transfers[transfer_id] = {
-                    "queue": asyncio.Queue(maxsize=10),
-                    "filename": message["filename"],
-                    "size": message["size"],
-                    "sender_id": client_id,
-                    "receiver_id": receiver_id,
-                    "accepted": asyncio.Event(),
-                    "is_group": False
-                }
-                notification = json.dumps({
-                    "type": "incoming_transfer",
+                # Always notify sender about the transfer ID
+                await manager.send_personal_message(json.dumps({
+                    "type": "transfer_initiated",
                     "transfer_id": transfer_id,
-                    "sender_name": manager.active_connections[client_id]["name"],
-                    "filename": message["filename"],
-                    "size": message["size"]
-                })
-                await manager.send_personal_message(notification, receiver_id)
+                    "filename": filename,
+                    "size": size
+                }), client_id)
             
             elif message["type"] == "transfer_accept":
                 transfer_id = message["transfer_id"]
@@ -230,20 +239,25 @@ async def upload_file(transfer_id: str, request: Request):
     else:
         await transfer["accepted"].wait()
     
-    async for chunk in request.stream():
-        if transfer.get("is_group"):
-            for mid, queue in transfer["queues"].items():
-                await queue.put(chunk)
-        else:
-            await transfer["queue"].put(chunk)
-    
-    if transfer.get("is_group"):
-        for queue in transfer["queues"].values():
-            await queue.put(None)
-    else:
-        await transfer["queue"].put(None)
+    try:
+        async for chunk in request.stream():
+            if transfer.get("is_group"):
+                for mid, queue in transfer["queues"].items():
+                    await queue.put(chunk)
+            else:
+                await transfer["queue"].put(chunk)
         
-    return {"status": "success"}
+        if transfer.get("is_group"):
+            for queue in transfer["queues"].values():
+                await queue.put(None)
+        else:
+            await transfer["queue"].put(None)
+        
+        transfer["upload_done"] = True
+        return {"status": "success"}
+    except Exception as e:
+        print(f"Upload error for {transfer_id}: {e}")
+        return {"status": "error", "message": str(e)}
 
 @app.get("/download/{transfer_id}", tags=["File Transfer"])
 async def download_file(transfer_id: str, client_id: str):
@@ -285,10 +299,11 @@ async def download_file(transfer_id: str, client_id: str):
             
         if transfer.get("is_group"):
             if client_id in transfer["queues"]: del transfer["queues"][client_id]
-            if not transfer["queues"]:
+            if not transfer["queues"] and transfer.get("upload_done"):
                 if transfer_id in transfers: del transfers[transfer_id]
         else:
-            if transfer_id in transfers: del transfers[transfer_id]
+            if transfer.get("upload_done"):
+                if transfer_id in transfers: del transfers[transfer_id]
 
     return StreamingResponse(
         iter_file(),

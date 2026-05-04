@@ -11,6 +11,8 @@ let transferRoles = {};
 let groupData = {};
 let allUsers = [];
 let currentlyManagingGroupId = null;
+let pendingFiles = new Map(); // Key: transfer_id
+let pendingRequestFiles = new Map(); // Key: filename+size (temp)
 
 function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -22,10 +24,24 @@ function connect() {
 
         if (data.type === 'user_list') {
             updateUserList(data.users);
+        } else if (data.type === 'transfer_initiated') {
+            const key = data.filename + data.size;
+            const file = pendingRequestFiles.get(key);
+            const uiId = pendingRequestFiles.get(key + "_ui");
+            if (file) {
+                pendingFiles.set(data.transfer_id, file);
+                if (uiId) pendingFiles.set(data.transfer_id + "_ui", uiId);
+                pendingRequestFiles.delete(key);
+                pendingRequestFiles.delete(key + "_ui");
+            }
+        } else if (data.type === 'transfer_approved') {
+            const file = pendingFiles.get(data.transfer_id);
+            if (file) {
+                startUpload(data.transfer_id, file);
+                // We keep it in the map until upload starts
+            }
         } else if (data.type === 'incoming_transfer') {
             handleIncomingTransfer(data);
-        } else if (data.type === 'transfer_approved') {
-            startUpload(data.transfer_id);
         } else if (data.type === 'transfer_status') {
             updateDownloadProgress(data);
         } else if (data.type === 'group_list') {
@@ -259,13 +275,13 @@ document.getElementById('username').onchange = (e) => {
 // File Handlers
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
-let pendingFile = null;
 
 dropZone.onclick = () => fileInput.click();
 
 fileInput.onchange = (e) => {
     if (e.target.files.length > 0) {
-        handleFile(e.target.files[0]);
+        const targetId = selectedGroupId ? `group-${selectedGroupId}` : selectedTargetId;
+        Array.from(e.target.files).forEach(file => handleFile(targetId, file));
     }
 };
 
@@ -280,42 +296,44 @@ dropZone.ondrop = (e) => {
     e.preventDefault();
     dropZone.classList.remove('dragover');
     if (e.dataTransfer.files.length > 0) {
-        handleFile(e.dataTransfer.files[0]);
+        const targetId = selectedGroupId ? `group-${selectedGroupId}` : selectedTargetId;
+        Array.from(e.dataTransfer.files).forEach(file => handleFile(targetId, file));
     }
 };
 
-function handleFile(file) {
-    if (!selectedTargetId && !selectedGroupId) return;
-    pendingFile = file;
+function handleFile(targetId, file) {
+    if (!targetId) return;
+    
+    // Store temporarily until we get transfer_initiated with a real transfer_id
+    pendingRequestFiles.set(file.name + file.size, file);
 
-    if (selectedGroupId) {
-        ws.send(JSON.stringify({
-            type: 'group_transfer_request',
-            group_id: selectedGroupId,
-            filename: file.name,
-            size: file.size
-        }));
-    } else {
-        ws.send(JSON.stringify({
-            type: 'transfer_request',
-            target_id: selectedTargetId,
-            filename: file.name,
-            size: file.size
-        }));
-    }
+    ws.send(JSON.stringify({
+        type: 'transfer_request',
+        target_id: targetId.startsWith('group-') ? null : targetId,
+        group_id: targetId.startsWith('group-') ? targetId.replace('group-', '') : null,
+        filename: file.name,
+        size: file.size
+    }));
 
-    showTransferStatus('request', 'waiting', `Asking receivers to accept...`);
+    // Generate a temporary ID for the "Waiting" UI card
+    const tempId = `wait-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+    showTransferStatus(tempId, 'waiting', `Waiting for approval for ${file.name}...`);
+    
+    // Associate temp UI with this file request
+    pendingRequestFiles.set(file.name + file.size + "_ui", tempId);
 }
 
-async function startUpload(transferId) {
-    if (!pendingFile) return;
-
+async function startUpload(transferId, file) {
     transferRoles[transferId] = 'sender';
-    // Clear the request card
-    const requestCard = document.getElementById('transfer-request');
-    if (requestCard) requestCard.remove();
+    
+    // Remove the waiting/request cards
+    const waitId = pendingFiles.get(transferId + "_ui");
+    if (waitId) {
+        const card = document.getElementById(`transfer-${waitId}`);
+        if (card) card.remove();
+    }
 
-    showTransferStatus(transferId, 'uploading', `Sending ${pendingFile.name}...`, 0, pendingFile.size);
+    showTransferStatus(transferId, 'uploading', `Sending ${file.name}...`, 0, file.size);
 
     const formData = new FormData();
     // We don't use conventional FormData because we want to stream from the body directly
@@ -325,7 +343,7 @@ async function startUpload(transferId) {
     try {
         const response = await fetch(`/upload/${transferId}`, {
             method: 'POST',
-            body: pendingFile, // This streams the file in Fetch API
+            body: file, // This streams the file in Fetch API
             duplex: 'half' // Required for streaming request bodies in Chrome
         });
 
