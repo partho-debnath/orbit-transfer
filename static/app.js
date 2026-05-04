@@ -66,8 +66,14 @@ function updateUserList(users) {
         const li = document.createElement('li');
         li.className = `user-item ${selectedTargetId === user.id ? 'active' : ''}`;
         li.innerHTML = `
-            <span>${user.name}</span>
-            <i class="fas fa-chevron-right"></i>
+            <div class="user-avatar">
+                <i class="fas fa-laptop"></i>
+            </div>
+            <div class="user-info">
+                <div class="user-name">${user.name}</div>
+                <div style="font-size: 0.7rem; color: var(--text-muted);">Available for peer orbit</div>
+            </div>
+            <i class="fas fa-chevron-right" style="font-size: 0.8rem; opacity: 0.5;"></i>
         `;
         li.onclick = () => selectUser(user);
         list.appendChild(li);
@@ -95,15 +101,18 @@ function updateGroupList(groups) {
 
         const isCreator = group.creator_id === clientId;
         li.innerHTML = `
-            <div style="display: flex; flex-direction: column;">
-                <span><i class="fas fa-layer-group"></i> ${group.name}</span>
-                <small style="font-size: 0.65rem; color: var(--text-muted);">
+            <div class="user-avatar" style="background: rgba(129, 140, 248, 0.15); color: var(--primary);">
+                <i class="fas fa-users-viewfinder"></i>
+            </div>
+            <div class="user-info">
+                <div class="user-name">${group.name}</div>
+                <div style="font-size: 0.7rem; color: var(--text-muted);">
                     ${group.members.length} members ${group.pending && group.pending.length > 0 ? `(${group.pending.length} pending)` : ''}
-                </small>
+                </div>
             </div>
             <div style="display:flex; gap: 8px;">
-                ${isCreator ? '<button onclick="event.stopPropagation(); addMemberPrompt(\'' + group.id + '\')" title="Manage Members" style="background:none; border:none; color:var(--accent); cursor:pointer;"><i class="fas fa-user-gear"></i></button>' : ''}
-                ${isCreator ? '<button onclick="event.stopPropagation(); deleteGroup(\'' + group.id + '\')" title="Delete Group" style="background:none; border:none; color:var(--danger); cursor:pointer;"><i class="fas fa-trash"></i></button>' : ''}
+                ${isCreator ? '<button onclick="event.stopPropagation(); addMemberPrompt(\'' + group.id + '\')" title="Manage Members" class="btn-icon" style="background:rgba(16, 185, 129, 0.1); color:var(--accent);"><i class="fas fa-cog"></i></button>' : ''}
+                ${isCreator ? '<button onclick="event.stopPropagation(); deleteGroup(\'' + group.id + '\')" title="Delete Group" class="btn-icon" style="background:rgba(244, 63, 94, 0.1); color:var(--danger);"><i class="fas fa-trash-alt"></i></button>' : ''}
             </div>
         `;
         li.onclick = (e) => selectGroup(group, e);
@@ -159,68 +168,86 @@ function renderModalContent(groupId) {
     const isCreator = group.creator_id === clientId;
     const currentMembers = new Set(group.members);
 
+    // Helper for labels
+    const createLabel = (text) => {
+        const h4 = document.createElement('h4');
+        h4.style = "font-size: 0.7rem; color: var(--text-muted); margin-bottom: 12px; text-transform: uppercase; font-weight: 800; letter-spacing: 0.05em;";
+        h4.innerText = text;
+        return h4;
+    };
+
     // Show Current Members section
-    const membersHeading = document.createElement('h4');
-    membersHeading.style = "font-size: 0.75rem; color: var(--text-muted); margin-bottom: 10px; text-transform: uppercase;";
-    membersHeading.innerText = "Current Members";
-    list.appendChild(membersHeading);
+    list.appendChild(createLabel("Active Orbiters"));
 
     if (group.members.length === 0) {
-        list.innerHTML += '<p style="padding: 10px; color: var(--text-muted); font-size: 0.8rem;">No active members</p>';
+        list.innerHTML += '<p style="padding: 12px; color: var(--text-muted); font-size: 0.85rem; background: rgba(255,255,255,0.02); border-radius: 12px; margin-bottom: 20px;">No active members in this orbit.</p>';
     } else {
+        const memberList = document.createElement('div');
+        memberList.style = "margin-bottom: 24px;";
         group.members.forEach(mid => {
-            const user = allUsers.find(u => u.id === mid) || { name: `User (${mid.substring(0, 4)})`, id: mid };
+            const user = allUsers.find(u => u.id === mid) || { name: `Orbiter (${mid.substring(0, 4)})`, id: mid };
             const div = document.createElement('div');
             div.className = 'modal-user-item';
+            div.style = "display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 12px; margin-bottom: 8px; border: 1px solid transparent; transition: all 0.2s;";
             div.innerHTML = `
-                <span>${user.name}</span>
-                ${isCreator ? `<button class="btn" style="background:var(--danger); color:white; padding: 2px 8px; font-size:0.7rem;" onclick="removeMember('${groupId}', '${mid}')">Remove</button>` : ''}
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 32px; height: 32px; border-radius: 8px; background: var(--primary-glow); display: flex; align-items: center; justify-content: center; color: var(--primary); font-size: 0.8rem;">
+                        <i class="fas fa-user-check"></i>
+                    </div>
+                    <span style="font-weight: 500;">${user.name}</span>
+                </div>
+                ${isCreator ? `<button class="btn-icon" style="background: rgba(244, 63, 94, 0.1); color: var(--danger);" onclick="removeMember('${groupId}', '${mid}')" title="Remove Member"><i class="fas fa-user-minus"></i></button>` : ''}
             `;
-            list.appendChild(div);
+            memberList.appendChild(div);
         });
+        list.appendChild(memberList);
     }
 
     // Show Pending section
     if (group.pending && group.pending.length > 0) {
-        const pendingHeading = document.createElement('h4');
-        pendingHeading.style = "font-size: 0.75rem; color: var(--text-muted); margin: 20px 0 10px 0; text-transform: uppercase;";
-        pendingHeading.innerText = "Pending Invitations";
-        list.appendChild(pendingHeading);
-
+        list.appendChild(createLabel("Pending Broadcasts"));
+        const pendingList = document.createElement('div');
+        pendingList.style = "margin-bottom: 24px;";
         group.pending.forEach(mid => {
-            const user = allUsers.find(u => u.id === mid) || { name: `User (${mid.substring(0, 4)})`, id: mid };
+            const user = allUsers.find(u => u.id === mid) || { name: `Orbiter (${mid.substring(0, 4)})`, id: mid };
             const div = document.createElement('div');
             div.className = 'modal-user-item';
-            div.style.opacity = '0.7';
+            div.style = "display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(255,255,255,0.02); border-radius: 12px; margin-bottom: 8px; opacity: 0.7;";
             div.innerHTML = `
-                <span>${user.name} <small style="background:var(--warning); color:black; padding:1px 4px; border-radius:4px; font-size:0.6rem; margin-left:5px;">PENDING</small></span>
-                ${isCreator ? `<button class="btn" style="background:var(--text-muted); color:white; padding: 2px 8px; font-size:0.7rem;" onclick="removeMember('${groupId}', '${mid}')">Cancel</button>` : ''}
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 32px; height: 32px; border-radius: 8px; background: rgba(255,255,255,0.05); display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.8rem;">
+                        <i class="fas fa-satellite-dish"></i>
+                    </div>
+                    <span style="font-weight: 500;">${user.name}</span>
+                </div>
+                ${isCreator ? `<button class="btn-icon" style="background: rgba(255,255,255,0.05); color: var(--text-muted);" onclick="removeMember('${groupId}', '${mid}')" title="Cancel Invite"><i class="fas fa-times"></i></button>` : ''}
             `;
-            list.appendChild(div);
+            pendingList.appendChild(div);
         });
+        list.appendChild(pendingList);
     }
 
-    // Invite section heading and logic
-    const inviteHeading = document.createElement('h4');
-    inviteHeading.style = "font-size: 0.75rem; color: var(--text-muted); margin: 20px 0 10px 0; text-transform: uppercase;";
-    inviteHeading.innerText = "Invite Online Users";
-    list.appendChild(inviteHeading);
+    // Invite section logic
+    list.appendChild(createLabel("Invite To Local Orbit"));
 
     const pendingMembers = new Set(group.pending || []);
     const availableUsers = allUsers.filter(u => u.id !== clientId && !currentMembers.has(u.id) && !pendingMembers.has(u.id));
 
     if (availableUsers.length === 0) {
-        const p = document.createElement('p');
-        p.style = "padding: 10px; color: var(--text-muted); font-size: 0.8rem;";
-        p.innerText = "No other users online";
-        list.appendChild(p);
+        list.innerHTML += '<p style="padding: 12px; color: var(--text-muted); font-size: 0.85rem; background: rgba(255,255,255,0.02); border-radius: 12px;">No other peers online for orbit.</p>';
     } else {
         availableUsers.forEach(user => {
             const div = document.createElement('div');
             div.className = 'modal-user-item';
+            div.style = "display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 12px; margin-bottom: 8px; border: 1px solid transparent; transition: all 0.2s;";
             div.innerHTML = `
-                <span>${user.name}</span>
-                <button class="btn btn-primary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="addMember('${groupId}', '${user.id}')">Add</button>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 32px; height: 32px; border-radius: 8px; background: rgba(129, 140, 248, 0.1); display: flex; align-items: center; justify-content: center; color: var(--primary); font-size: 0.8rem;">
+                        <i class="fas fa-plus"></i>
+                    </div>
+                    <span style="font-weight: 500;">${user.name}</span>
+                </div>
+                <button class="btn-primary" style="padding: 6px 12px; border-radius: 8px; background: var(--primary); color: white; border: none; cursor: pointer; font-size: 0.75rem; font-weight: 700;" onclick="addMember('${groupId}', '${user.id}')">INVITE</button>
             `;
             list.appendChild(div);
         });
@@ -243,17 +270,24 @@ function hideModal() {
 }
 
 function handleGroupInvite(data) {
-    console.log("Received Group Invite:", data);
+    console.log("Processing group invite:", data);
     const container = document.getElementById('notifications-container');
     const div = document.createElement('div');
     div.className = 'notification';
     div.id = `invite-${data.group_id}`;
     div.innerHTML = `
-        <p><strong>${data.creator_name}</strong> invited you to join:</p>
-        <p style="font-size: 1.1rem; margin: 10px 0;">Group: ${data.group_name}</p>
-        <div style="display: flex; gap: 10px; margin-top: 15px;">
-            <button class="btn btn-primary" onclick="acceptGroupInvite('${data.group_id}')">Join</button>
-            <button class="btn" onclick="this.parentElement.parentElement.remove()">Ignore</button>
+        <div class="notification-header">
+            <div class="notification-icon">
+                <i class="fas fa-envelope-open-text"></i>
+            </div>
+            <div style="flex: 1;">
+                <p class="notification-title">Group Invitation</p>
+                <p class="notification-subtitle"><strong>${data.creator_name}</strong> invited you to <strong>${data.group_name}</strong></p>
+                <div class="btn-group">
+                    <button class="btn-accept" onclick="acceptGroupInvite('${data.group_id}')">Join Group</button>
+                    <button class="btn-decline" onclick="this.closest('.notification').remove()"><i class="fas fa-times"></i></button>
+                </div>
+            </div>
         </div>
     `;
     container.appendChild(div);
@@ -383,7 +417,6 @@ function renderNotifications() {
     const container = document.getElementById('notifications-container');
     container.innerHTML = '';
     
-    // Grouping by sender
     const grouped = incomingTransfers.reduce((acc, t) => {
         if (!acc[t.sender_name]) acc[t.sender_name] = [];
         acc[t.sender_name].push(t);
@@ -397,41 +430,56 @@ function renderNotifications() {
         if (transfers.length > 1) {
             const totalSize = transfers.reduce((s, t) => s + t.size, 0);
             div.innerHTML = `
-                <div style="border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px; margin-bottom: 10px;">
-                    <p><strong>${senderName}</strong> is sending <strong>${transfers.length} files</strong>:</p>
-                    <p style="font-size: 0.9rem; opacity: 0.8;">Total: ${formatBytes(totalSize)}</p>
-                </div>
-                <div style="max-height: 150px; overflow-y: auto; margin: 10px 0; background: rgba(0,0,0,0.2); border-radius: 8px; padding: 5px;">
-                    ${transfers.map(t => `
-                        <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); gap: 10px;">
-                            <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 0.85rem;" title="${t.filename}">
-                                ${t.filename} <span style="opacity: 0.6; font-size: 0.75rem;">(${formatBytes(t.size)})</span>
-                            </div>
-                            <div style="display: flex; gap: 5px;">
-                                <button class="btn btn-primary" style="padding: 2px 8px; font-size: 0.7rem;" onclick="acceptTransfer('${t.transfer_id}', '${t.filename}', ${t.size})">
-                                    <i class="fas fa-check"></i>
-                                </button>
-                                <button class="btn" style="padding: 2px 8px; font-size: 0.7rem; background: var(--danger); color: white;" onclick="declineTransfer('${t.transfer_id}')">
-                                    <i class="fas fa-times"></i>
-                                </button>
-                            </div>
+                <div class="notification-header">
+                    <div class="notification-icon">
+                        <i class="fas fa-boxes"></i>
+                    </div>
+                    <div style="flex: 1; overflow: hidden;">
+                        <p class="notification-title">Batch Orbit Request</p>
+                        <p class="notification-subtitle"><strong>${senderName}</strong> is sending <strong>${transfers.length} files</strong> (${formatBytes(totalSize)})</p>
+                        
+                        <div class="file-list-compact">
+                            ${transfers.map(t => `
+                                <div class="file-item-compact">
+                                    <div class="file-name-compact" title="${t.filename}">
+                                        ${t.filename}
+                                    </div>
+                                    <div style="display: flex; align-items: center; gap: 8px;">
+                                        <span style="opacity: 0.5; font-size: 0.7rem;">${formatBytes(t.size)}</span>
+                                        <button class="btn-icon" style="width: 24px; height: 24px; font-size: 0.7rem; background: rgba(129, 140, 248, 0.1); color: var(--primary);" 
+                                                onclick="acceptTransfer('${t.transfer_id}', '${t.filename}', ${t.size})" title="Accept this file">
+                                            <i class="fas fa-check"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            `).join('')}
                         </div>
-                    `).join('')}
-                </div>
-                <div style="display: flex; gap: 10px; margin-top: 15px;">
-                    <button class="btn btn-primary" style="flex: 1" onclick="acceptAllFromSender('${senderName}')">Accept All</button>
-                    <button class="btn" style="background: var(--danger); color: white;" onclick="declineAllFromSender('${senderName}')">Decline All</button>
+                        
+                        <div class="btn-group">
+                            <button class="btn-accept" onclick="acceptAllFromSender('${senderName}')">Accept All</button>
+                            <button class="btn-decline" onclick="declineAllFromSender('${senderName}')"><i class="fas fa-times"></i></button>
+                        </div>
+                    </div>
                 </div>
             `;
         } else {
             const t = transfers[0];
             div.innerHTML = `
-                <p><strong>${senderName}</strong> wants to send:</p>
-                <p style="font-size: 1.1rem; margin: 10px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${t.filename}</p>
-                <p style="font-size: 0.9rem; opacity: 0.8;">Size: ${formatBytes(t.size)}</p>
-                <div style="display: flex; gap: 8px; margin-top: 15px;">
-                    <button class="btn btn-primary" style="flex: 1" onclick="acceptTransfer('${t.transfer_id}', '${t.filename}', ${t.size})">Accept</button>
-                    <button class="btn" style="background: var(--danger); color: white;" onclick="declineTransfer('${t.transfer_id}')">Decline</button>
+                <div class="notification-header">
+                    <div class="notification-icon">
+                        <i class="fas fa-file-export"></i>
+                    </div>
+                    <div style="flex: 1; overflow: hidden;">
+                        <p class="notification-title">Incoming Orbit</p>
+                        <p class="notification-subtitle"><strong>${senderName}</strong> wants to send:</p>
+                        <p style="font-weight: 600; margin: 8px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${t.filename}</p>
+                        <p style="font-size: 0.75rem; color: var(--text-muted);">${formatBytes(t.size)}</p>
+                        
+                        <div class="btn-group">
+                            <button class="btn-accept" onclick="acceptTransfer('${t.transfer_id}', '${t.filename}', ${t.size})">Accept</button>
+                            <button class="btn-decline" onclick="declineTransfer('${t.transfer_id}')"><i class="fas fa-times"></i></button>
+                        </div>
+                    </div>
                 </div>
             `;
         }
@@ -489,13 +537,9 @@ let lastProgress = {};
 
 function updateDownloadProgress(data) {
     if (data.status === 'complete') {
-        const el = document.getElementById(`transfer-${data.transfer_id}`);
-        if (el) {
-            const role = transferRoles[data.transfer_id];
-            const msg = role === 'sender' ? 'File transfer complete' : 'File download complete';
-            el.innerHTML = `<p style="color: var(--accent)"><i class="fas fa-check-circle"></i> ${msg}!</p>`;
-            setTimeout(() => el.remove(), 5000);
-        }
+        const role = transferRoles[data.transfer_id];
+        const msg = role === 'sender' ? 'File transfer complete' : 'File download complete';
+        showTransferStatus(data.transfer_id, 'done', msg, 100, data.total_size);
         return;
     }
 
@@ -539,23 +583,35 @@ function showTransferStatus(transferId, status, text, progress = null, totalSize
     }
 
     const displaySize = totalSize > 0 ? `0 / ${formatBytes(totalSize)}` : '0 / 0';
+    const isDone = status === 'done';
 
     card.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: start;">
-            <p style="font-weight: 600;">${status === 'done' ? 'Success' : 'Transfer Progress'}</p>
-            <span id="rate-${transferId}" style="font-size: 0.8rem;">0 KB/s</span>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <div style="width: 8px; height: 8px; border-radius: 50%; background: ${isDone ? 'var(--accent)' : 'var(--primary)'}; border-glow: 0 0 8px ${isDone ? 'var(--accent)' : 'var(--primary)'}"></div>
+                <p style="font-weight: 700; font-size: 0.9rem; letter-spacing: 0.02em;">${isDone ? 'COMPLETED' : 'ORBITING'}</p>
+            </div>
+            <span id="rate-${transferId}" style="font-size: 0.75rem; font-weight: 600; color: var(--primary);">${isDone ? '' : '0 KB/s'}</span>
         </div>
-        <p style="font-size: 0.85rem; color: var(--text-muted); margin: 8px 0;">${text}</p>
-        <div class="progress-container"><div class="progress-bar" id="pb-${transferId}" style="width: ${progress || 0}%"></div></div>
-        <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted); margin-top: 5px;">
+        <p style="font-size: 0.85rem; color: var(--text-main); margin-bottom: 12px; font-weight: 500;">${text}</p>
+        <div class="progress-container">
+            <div class="progress-bar" id="pb-${transferId}" style="width: ${progress || 0}%"></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--text-muted); margin-top: 8px; font-weight: 600;">
             <span id="percent-${transferId}">${progress || 0}%</span>
             <span id="size-${transferId}">${displaySize}</span>
         </div>
-        <p style="font-size: 0.7rem; color: var(--text-muted); margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 5px;">Date: ${new Date().toLocaleTimeString()}</p>
     `;
 
-    if (status === 'done') {
-        setTimeout(() => card.remove(), 5000);
+    if (isDone) {
+        card.style.borderColor = 'var(--accent)';
+        card.style.boxShadow = '0 10px 30px rgba(16, 185, 129, 0.2)';
+        setTimeout(() => {
+            card.style.transition = 'all 0.5s ease-out';
+            card.style.opacity = '0';
+            card.style.transform = 'translateX(50px)';
+            setTimeout(() => card.remove(), 500);
+        }, 4000);
     }
 }
 
