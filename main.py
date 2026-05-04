@@ -109,11 +109,43 @@ async def download_file(transfer_id: str):
     transfer = transfers[transfer_id]
     
     async def iter_file():
+        bytes_sent = 0
+        last_report_time = asyncio.get_event_loop().time()
+        chunk_received_time = last_report_time
+        
         while True:
             chunk = await transfer["queue"].get()
             if chunk is None:
+                # Signal end to receiver UI
+                status_msg = json.dumps({
+                    "type": "transfer_status",
+                    "transfer_id": transfer_id,
+                    "status": "complete"
+                })
+                await manager.send_personal_message(status_msg, transfer["receiver_id"])
+                await manager.send_personal_message(status_msg, transfer["sender_id"])
                 break
+            
+            bytes_sent += len(chunk)
+            current_time = asyncio.get_event_loop().time()
+            
+            # Report every 0.2 seconds to avoid flooding WS
+            if current_time - last_report_time > 0.2:
+                progress_msg = json.dumps({
+                    "type": "transfer_status",
+                    "transfer_id": transfer_id,
+                    "status": "progress",
+                    "bytes_sent": bytes_sent,
+                    "total_size": transfer["size"],
+                    "percentage": round((bytes_sent / transfer["size"]) * 100, 1)
+                })
+                await manager.send_personal_message(progress_msg, transfer["receiver_id"])
+                await manager.send_personal_message(progress_msg, transfer["sender_id"])
+                last_report_time = current_time
+            
+            chunk_received_time = current_time
             yield chunk
+            
         # Clean up after download finished
         if transfer_id in transfers:
             del transfers[transfer_id]
@@ -121,7 +153,11 @@ async def download_file(transfer_id: str):
     return StreamingResponse(
         iter_file(),
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f"attachment; filename={transfer['filename']}"}
+        headers={
+            "Content-Disposition": f'attachment; filename="{transfer["filename"]}"',
+            "Content-Length": str(transfer["size"]),
+            "X-Content-Type-Options": "nosniff"
+        }
     )
 
 @app.get("/")

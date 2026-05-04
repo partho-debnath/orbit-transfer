@@ -21,6 +21,8 @@ function connect() {
             showIncomingNotification(data);
         } else if (data.type === 'transfer_approved') {
             startUpload(data.transfer_id);
+        } else if (data.type === 'transfer_status') {
+            updateDownloadProgress(data);
         }
     };
 
@@ -108,7 +110,7 @@ async function startUpload(transferId) {
     if (!pendingFile) return;
     
     const startTime = new Date();
-    showTransferStatus('uploading', `Sending ${pendingFile.name}...`, 0);
+    showTransferStatus(transferId, 'uploading', `Sending ${pendingFile.name}...`, 0);
     
     const formData = new FormData();
     // We don't use conventional FormData because we want to stream from the body directly
@@ -127,7 +129,7 @@ async function startUpload(transferId) {
         }
     } catch (err) {
         console.error("Upload failed", err);
-        showTransferStatus('error', 'Upload failed');
+        showTransferStatus(transferId, 'error', 'Upload failed');
     }
 }
 
@@ -152,40 +154,93 @@ function acceptTransfer(transferId, btn) {
         transfer_id: transferId
     }));
     
+    btn.parentElement.parentElement.id = `transfer-${transferId}`;
     btn.parentElement.parentElement.innerHTML = `
-        <p>Preparing download...</p>
-        <div class="progress-container"><div class="progress-bar" id="pb-${transferId}" style="width: 0%"></div></div>
+        <div style="display: flex; justify-content: space-between;">
+            <p><strong>Receiving File...</strong></p>
+            <span id="rate-${transferId}">0 KB/s</span>
+        </div>
+        <div class="progress-container" style="margin: 10px 0;">
+            <div class="progress-bar" id="pb-${transferId}" style="width: 0%"></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted);">
+            <span id="percent-${transferId}">0%</span>
+            <span id="size-${transferId}">0 / 0</span>
+        </div>
     `;
     
-    // In a real stream, we'd have to monitor the download progress.
-    // Browsers don't give direct progress on a standard window.location download.
-    // So we'll trigger the download.
-    window.location.href = `/download/${transferId}`;
+    const a = document.createElement('a');
+    a.href = `/download/${transferId}`;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => document.body.removeChild(a), 100);
 }
 
-function showTransferStatus(status, text, progress = null) {
+let lastProgress = {};
+
+function updateDownloadProgress(data) {
+    if (data.status === 'complete') {
+        const el = document.getElementById(`transfer-${data.transfer_id}`);
+        if (el) {
+            el.innerHTML = `<p style="color: var(--accent)"><i class="fas fa-check-circle"></i> Download Finished!</p>`;
+            setTimeout(() => el.remove(), 5000);
+        }
+        return;
+    }
+
+    const pb = document.getElementById(`pb-${data.transfer_id}`);
+    const percent = document.getElementById(`percent-${data.transfer_id}`);
+    const size = document.getElementById(`size-${data.transfer_id}`);
+    const rate = document.getElementById(`rate-${data.transfer_id}`);
+
+    if (pb) {
+        pb.style.width = `${data.percentage}%`;
+        percent.innerText = `${data.percentage}%`;
+        size.innerText = `${formatBytes(data.bytes_sent)} / ${formatBytes(data.total_size)}`;
+        
+        // Calculate rate
+        const now = Date.now();
+        const last = lastProgress[data.transfer_id] || { time: now, bytes: 0 };
+        const deltaBytes = data.bytes_sent - last.bytes;
+        const deltaTime = (now - last.time) / 1000;
+        
+        if (deltaTime >= 0.5) {
+            const kbps = (deltaBytes / 1024) / deltaTime;
+            rate.innerText = kbps > 1024 ? `${(kbps/1024).toFixed(2)} MB/s` : `${kbps.toFixed(1)} KB/s`;
+            lastProgress[data.transfer_id] = { time: now, bytes: data.bytes_sent };
+        }
+    }
+}
+
+function showTransferStatus(transferId, status, text, progress = null) {
     const container = document.getElementById('status-container');
-    let card = document.getElementById('active-transfer-card');
+    let card = document.getElementById(`transfer-${transferId}`);
     
     if (!card) {
         card = document.createElement('div');
-        card.id = 'active-transfer-card';
+        card.id = `transfer-${transferId}`;
         card.className = 'transfer-card';
         container.appendChild(card);
     }
     
     card.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: start;">
-            <p style="font-weight: 600;">${status === 'done' ? 'Success' : 'Transfer Status'}</p>
-            <i class="fas fa-times" style="cursor: pointer;" onclick="this.parentElement.parentElement.remove()"></i>
+            <p style="font-weight: 600;">${status === 'done' ? 'Success' : 'Transfer Progress'}</p>
+            <span id="rate-${transferId}" style="font-size: 0.8rem;">0 KB/s</span>
         </div>
         <p style="font-size: 0.85rem; color: var(--text-muted); margin: 8px 0;">${text}</p>
-        ${progress !== null ? `
-            <div class="progress-container"><div class="progress-bar" style="width: ${progress}%"></div></div>
-            <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 5px;">${progress}% complete</p>
-        ` : ''}
-        <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 5px;">Date: ${new Date().toLocaleString()}</p>
+        <div class="progress-container"><div class="progress-bar" id="pb-${transferId}" style="width: ${progress || 0}%"></div></div>
+        <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted); margin-top: 5px;">
+            <span id="percent-${transferId}">${progress || 0}%</span>
+            <span id="size-${transferId}">0 / 0</span>
+        </div>
+        <p style="font-size: 0.7rem; color: var(--text-muted); margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 5px;">Date: ${new Date().toLocaleTimeString()}</p>
     `;
+    
+    if (status === 'done') {
+        setTimeout(() => card.remove(), 5000);
+    }
 }
 
 function formatBytes(bytes, decimals = 2) {
