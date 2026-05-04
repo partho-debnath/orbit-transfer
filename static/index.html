@@ -21,9 +21,19 @@
         
         <main>
             <aside class="user-sidebar">
-                <h3 style="margin-bottom: 20px; font-size: 0.9rem; text-transform: uppercase; color: var(--text-muted);">Users Online</h3>
-                <ul id="user-list" class="user-list">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <h3 style="font-size: 0.8rem; text-transform: uppercase; color: var(--text-muted);">Users Online</h3>
+                </div>
+                <ul id="user-list" class="user-list" style="margin-bottom: 30px;">
                     <!-- Users will be injected here -->
+                </ul>
+
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <h3 style="font-size: 0.8rem; text-transform: uppercase; color: var(--text-muted);">Groups</h3>
+                    <button id="btn-create-group" style="background: none; border: none; color: var(--primary); cursor: pointer;"><i class="fas fa-plus-circle"></i></button>
+                </div>
+                <ul id="group-list" class="user-list">
+                    <!-- Groups will be injected here -->
                 </ul>
             </aside>
             
@@ -45,6 +55,19 @@
                 <div id="notifications-container" style="width: 100%; max-width: 400px;"></div>
             </section>
         </main>
+    </div>
+
+    <!-- Member Selection Modal -->
+    <div id="member-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+                <h3 style="font-size: 1rem;">Manage Group</h3>
+                <button onclick="hideModal()" style="background:none; border:none; color:var(--text-muted); cursor:pointer;"><i class="fas fa-times"></i></button>
+            </div>
+            <div id="modal-user-list">
+                <!-- Selectable users will be here -->
+            </div>
+        </div>
     </div>
 
     <!-- Active Transfer Card Template -->

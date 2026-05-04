@@ -19,11 +19,14 @@ app = FastAPI(
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, Dict] = {}
+        # groups: {group_id: {"name": str, "creator_id": str, "members": set(client_ids), "pending": set(client_ids)}}
+        self.groups: Dict[str, Dict] = {}
 
     async def connect(self, websocket: WebSocket, client_id: str, name: str):
         await websocket.accept()
         self.active_connections[client_id] = {"websocket": websocket, "name": name}
         await self.broadcast_users()
+        await self.send_user_groups(client_id)
 
     def disconnect(self, client_id: str):
         if client_id in self.active_connections:
@@ -32,25 +35,47 @@ class ConnectionManager:
     async def broadcast_users(self):
         users = [{"id": cid, "name": info["name"]} for cid, info in self.active_connections.items()]
         message = json.dumps({"type": "user_list", "users": users})
-        for connection in self.active_connections.values():
-            await connection["websocket"].send_text(message)
+        to_remove = []
+        for cid, info in list(self.active_connections.items()):
+            try:
+                await info["websocket"].send_text(message)
+            except:
+                to_remove.append(cid)
+        for cid in to_remove:
+            self.disconnect(cid)
+
+    async def send_user_groups(self, client_id: str):
+        user_groups = []
+        for gid, ginfo in self.groups.items():
+            if client_id == ginfo["creator_id"] or client_id in ginfo["members"]:
+                user_groups.append({
+                    "id": gid, 
+                    "name": ginfo["name"], 
+                    "creator_id": ginfo["creator_id"],
+                    "members": list(ginfo["members"]),
+                    "pending": list(ginfo.get("pending", set()))
+                })
+        await self.send_personal_message(json.dumps({"type": "group_list", "groups": user_groups}), client_id)
+
+    async def broadcast_group_update(self, group_id: str):
+        ginfo = self.groups.get(group_id)
+        if not ginfo: return
+        all_concerned = ginfo["members"] | {ginfo["creator_id"]} | ginfo.get("pending", set())
+        for cid in all_concerned:
+            await self.send_user_groups(cid)
 
     async def send_personal_message(self, message: str, client_id: str):
         if client_id in self.active_connections:
-            await self.active_connections[client_id]["websocket"].send_text(message)
+            try:
+                await self.active_connections[client_id]["websocket"].send_text(message)
+            except:
+                self.disconnect(client_id)
 
 manager = ConnectionManager()
-
-# Store pending transfers: {transfer_id: {"queue": asyncio.Queue, "filename": str, "size": int}}
 transfers: Dict[str, Dict] = {}
 
 @app.websocket("/ws/{client_id}/{name}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
-    """
-    WebSocket endpoint for real-time presence and signaling.
-    - **client_id**: Unique ID for the client.
-    - **name**: Display name of the user.
-    """
     await manager.connect(websocket, client_id, name)
     try:
         while True:
@@ -61,19 +86,101 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
                 manager.active_connections[client_id]["name"] = message["name"]
                 await manager.broadcast_users()
             
+            elif message["type"] == "create_group":
+                group_id = str(uuid.uuid4())[:8]
+                manager.groups[group_id] = {
+                    "name": message["name"],
+                    "creator_id": client_id,
+                    "members": set(),
+                    "pending": set()
+                }
+                await manager.send_user_groups(client_id)
+
+            elif message["type"] == "add_member":
+                group_id = message["group_id"]
+                member_id = message["member_id"]
+                if group_id in manager.groups and manager.groups[group_id]["creator_id"] == client_id:
+                    manager.groups[group_id]["pending"].add(member_id)
+                    await manager.broadcast_group_update(group_id)
+                    # Send specific invite
+                    await manager.send_personal_message(json.dumps({
+                        "type": "group_invite",
+                        "group_id": group_id,
+                        "group_name": manager.groups[group_id]["name"],
+                        "creator_name": manager.active_connections[client_id]["name"]
+                    }), member_id)
+
+            elif message["type"] == "group_invite_accept":
+                group_id = message["group_id"]
+                if group_id in manager.groups and client_id in manager.groups[group_id]["pending"]:
+                    manager.groups[group_id]["pending"].remove(client_id)
+                    manager.groups[group_id]["members"].add(client_id)
+                    await manager.broadcast_group_update(group_id)
+
+            elif message["type"] == "remove_member":
+                group_id = message["group_id"]
+                member_id = message["member_id"]
+                if group_id in manager.groups and manager.groups[group_id]["creator_id"] == client_id:
+                    if member_id in manager.groups[group_id]["members"]:
+                        manager.groups[group_id]["members"].remove(member_id)
+                        await manager.broadcast_group_update(group_id)
+
+            elif message["type"] == "delete_group":
+                group_id = message["group_id"]
+                if group_id in manager.groups and manager.groups[group_id]["creator_id"] == client_id:
+                    ginfo = manager.groups[group_id]
+                    all_concerned = ginfo["members"] | {ginfo["creator_id"]}
+                    del manager.groups[group_id]
+                    for cid in all_concerned:
+                        await manager.send_user_groups(cid)
+
+            elif message["type"] == "group_transfer_request":
+                group_id = message["group_id"]
+                if group_id in manager.groups:
+                    group = manager.groups[group_id]
+                    transfer_id = str(uuid.uuid4())
+                    member_ids = list(group["members"])
+                    transfers[transfer_id] = {
+                        "queues": {mid: asyncio.Queue(maxsize=10) for mid in member_ids},
+                        "filename": message["filename"],
+                        "size": message["size"],
+                        "sender_id": client_id,
+                        "receiver_ids": member_ids,
+                        "accepted_count": 0,
+                        "expected_count": len(member_ids),
+                        "all_accepted": asyncio.Event(),
+                        "is_group": True,
+                        "auto_accept": True # New flag to allow immediate start if all are members
+                    }
+                    # If all receivers are already members, we can theoreticaly auto-start
+                    # but the client must perform the 'accept' handshake for state tracking.
+                    # We will mark it as all_accepted immediately because they are joined members? 
+                    # No, the user said "can auto receive". 
+                    # We will still send notification, but the client will auto-accept.
+                    
+                    notification = json.dumps({
+                        "type": "incoming_transfer",
+                        "transfer_id": transfer_id,
+                        "sender_name": f"Group: {group['name']}",
+                        "filename": message["filename"],
+                        "size": message["size"],
+                        "is_group": True
+                    })
+                    for mid in member_ids:
+                        await manager.send_personal_message(notification, mid)
+
             elif message["type"] == "transfer_request":
-                # Sender asking to send to receiver
                 receiver_id = message["target_id"]
                 transfer_id = str(uuid.uuid4())
                 transfers[transfer_id] = {
-                    "queue": asyncio.Queue(maxsize=10), # Buffer a few chunks
+                    "queue": asyncio.Queue(maxsize=10),
                     "filename": message["filename"],
                     "size": message["size"],
                     "sender_id": client_id,
                     "receiver_id": receiver_id,
-                    "accepted": asyncio.Event()
+                    "accepted": asyncio.Event(),
+                    "is_group": False
                 }
-                
                 notification = json.dumps({
                     "type": "incoming_transfer",
                     "transfer_id": transfer_id,
@@ -86,13 +193,21 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
             elif message["type"] == "transfer_accept":
                 transfer_id = message["transfer_id"]
                 if transfer_id in transfers:
-                    transfers[transfer_id]["accepted"].set()
-                    # Notify sender that they can start uploading
-                    sender_id = transfers[transfer_id]["sender_id"]
-                    await manager.send_personal_message(json.dumps({
-                        "type": "transfer_approved",
-                        "transfer_id": transfer_id
-                    }), sender_id)
+                    transfer = transfers[transfer_id]
+                    if transfer.get("is_group"):
+                        transfer["accepted_count"] += 1
+                        if transfer["accepted_count"] == transfer["expected_count"]:
+                            transfer["all_accepted"].set()
+                            await manager.send_personal_message(json.dumps({
+                                "type": "transfer_approved",
+                                "transfer_id": transfer_id
+                            }), transfer["sender_id"])
+                    else:
+                        transfer["accepted"].set()
+                        await manager.send_personal_message(json.dumps({
+                            "type": "transfer_approved",
+                            "transfer_id": transfer_id
+                        }), transfer["sender_id"])
 
     except WebSocketDisconnect:
         manager.disconnect(client_id)
@@ -100,27 +215,32 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
 
 @app.post("/upload/{transfer_id}", tags=["File Transfer"])
 async def upload_file(transfer_id: str, request: Request):
-    """
-    Stream a file upload directly to the receiver's queue.
-    The file is not saved to disk at any point.
-    """
     if transfer_id not in transfers:
         raise HTTPException(status_code=404, detail="Transfer not found")
     
     transfer = transfers[transfer_id]
-    await transfer["accepted"].wait() # Wait for receiver to be ready
+    if transfer.get("is_group"):
+        await transfer["all_accepted"].wait()
+    else:
+        await transfer["accepted"].wait()
     
     async for chunk in request.stream():
-        await transfer["queue"].put(chunk)
+        if transfer.get("is_group"):
+            for mid, queue in transfer["queues"].items():
+                await queue.put(chunk)
+        else:
+            await transfer["queue"].put(chunk)
     
-    await transfer["queue"].put(None) # Signal end of stream
+    if transfer.get("is_group"):
+        for queue in transfer["queues"].values():
+            await queue.put(None)
+    else:
+        await transfer["queue"].put(None)
+        
     return {"status": "success"}
 
 @app.get("/download/{transfer_id}", tags=["File Transfer"])
-async def download_file(transfer_id: str):
-    """
-    Stream a file download directly from the sender's queue.
-    """
+async def download_file(transfer_id: str, client_id: str):
     if transfer_id not in transfers:
         raise HTTPException(status_code=404, detail="Transfer not found")
     
@@ -129,25 +249,20 @@ async def download_file(transfer_id: str):
     async def iter_file():
         bytes_sent = 0
         last_report_time = asyncio.get_event_loop().time()
-        chunk_received_time = last_report_time
+        
+        queue = transfer["queues"][client_id] if transfer.get("is_group") else transfer["queue"]
+        receiver_id = client_id if transfer.get("is_group") else transfer["receiver_id"]
         
         while True:
-            chunk = await transfer["queue"].get()
+            chunk = await queue.get()
             if chunk is None:
-                # Signal end to receiver UI
-                status_msg = json.dumps({
-                    "type": "transfer_status",
-                    "transfer_id": transfer_id,
-                    "status": "complete"
-                })
-                await manager.send_personal_message(status_msg, transfer["receiver_id"])
+                status_msg = json.dumps({"type": "transfer_status", "transfer_id": transfer_id, "status": "complete"})
+                await manager.send_personal_message(status_msg, receiver_id)
                 await manager.send_personal_message(status_msg, transfer["sender_id"])
                 break
             
             bytes_sent += len(chunk)
             current_time = asyncio.get_event_loop().time()
-            
-            # Report every 0.2 seconds to avoid flooding WS
             if current_time - last_report_time > 0.2:
                 progress_msg = json.dumps({
                     "type": "transfer_status",
@@ -157,16 +272,17 @@ async def download_file(transfer_id: str):
                     "total_size": transfer["size"],
                     "percentage": round((bytes_sent / transfer["size"]) * 100, 1)
                 })
-                await manager.send_personal_message(progress_msg, transfer["receiver_id"])
+                await manager.send_personal_message(progress_msg, receiver_id)
                 await manager.send_personal_message(progress_msg, transfer["sender_id"])
                 last_report_time = current_time
-            
-            chunk_received_time = current_time
             yield chunk
             
-        # Clean up after download finished
-        if transfer_id in transfers:
-            del transfers[transfer_id]
+        if transfer.get("is_group"):
+            if client_id in transfer["queues"]: del transfer["queues"][client_id]
+            if not transfer["queues"]:
+                if transfer_id in transfers: del transfers[transfer_id]
+        else:
+            if transfer_id in transfers: del transfers[transfer_id]
 
     return StreamingResponse(
         iter_file(),
