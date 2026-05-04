@@ -10,6 +10,7 @@ let ws = null;
 let transferRoles = {};
 let groupData = {};
 let allUsers = [];
+let currentlyManagingGroupId = null;
 
 function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -91,6 +92,11 @@ function updateGroupList(groups) {
         li.onclick = (e) => selectGroup(group, e);
         list.appendChild(li);
     });
+
+    // If modal is open for a group that just got updated, refresh the modal content
+    if (currentlyManagingGroupId && document.getElementById('member-modal').style.display === 'flex') {
+        renderModalContent(currentlyManagingGroupId);
+    }
 }
 
 function selectGroup(group, event) {
@@ -123,7 +129,12 @@ function deleteGroup(groupId) {
 }
 
 function addMemberPrompt(groupId) {
-    const modal = document.getElementById('member-modal');
+    currentlyManagingGroupId = groupId;
+    renderModalContent(groupId);
+    document.getElementById('member-modal').style.display = 'flex';
+}
+
+function renderModalContent(groupId) {
     const list = document.getElementById('modal-user-list');
     list.innerHTML = '';
 
@@ -197,8 +208,6 @@ function addMemberPrompt(groupId) {
             list.appendChild(div);
         });
     }
-
-    modal.style.display = 'flex';
 }
 
 function addMember(groupId, memberId) {
@@ -213,6 +222,7 @@ function removeMember(groupId, memberId) {
 
 function hideModal() {
     document.getElementById('member-modal').style.display = 'none';
+    currentlyManagingGroupId = null;
 }
 
 function handleGroupInvite(data) {
