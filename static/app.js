@@ -13,6 +13,7 @@ let allUsers = [];
 let currentlyManagingGroupId = null;
 let pendingFiles = new Map(); // Key: transfer_id
 let pendingRequestFiles = new Map(); // Key: filename+size (temp)
+let incomingTransfers = []; // List of pending incoming transfer objects
 
 function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -358,10 +359,8 @@ async function startUpload(transferId, file) {
 }
 
 function handleIncomingTransfer(data) {
-    // Check if we are a member of this group to auto-accept
     let isGroupMember = false;
     if (data.is_group) {
-        // Find group by name (sent as "Group: Name")
         const groupName = data.sender_name.replace("Group: ", "");
         const group = Object.values(groupData).find(g => g.name === groupName);
         if (group && group.members.includes(clientId)) {
@@ -370,31 +369,101 @@ function handleIncomingTransfer(data) {
     }
 
     if (isGroupMember) {
-        console.log("Auto-accepting group transfer...");
-        // Use a small delay to ensure UI is ready
         setTimeout(() => {
             triggerDownload(data.transfer_id, data.filename, data.size);
         }, 500);
         return;
     }
 
-    const container = document.getElementById('notifications-container');
-    const div = document.createElement('div');
-    div.className = 'notification';
-    div.innerHTML = `
-        <p><strong>${data.sender_name}</strong> wants to send you:</p>
-        <p style="font-size: 1.1rem; margin: 10px 0;">${data.filename} (${formatBytes(data.size)})</p>
-        <div style="display: flex; gap: 10px; margin-top: 15px;">
-            <button class="btn btn-primary" onclick="acceptTransfer('${data.transfer_id}', this, ${data.size})">Accept</button>
-            <button class="btn" style="background: var(--danger); color: white;" onclick="this.parentElement.parentElement.remove()">Decline</button>
-        </div>
-    `;
-    container.appendChild(div);
+    incomingTransfers.push(data);
+    renderNotifications();
 }
 
-function acceptTransfer(transferId, btn, size, filename) {
-    btn.parentElement.parentElement.remove(); // Remove notification
+function renderNotifications() {
+    const container = document.getElementById('notifications-container');
+    container.innerHTML = '';
+    
+    // Grouping by sender
+    const grouped = incomingTransfers.reduce((acc, t) => {
+        if (!acc[t.sender_name]) acc[t.sender_name] = [];
+        acc[t.sender_name].push(t);
+        return acc;
+    }, {});
+
+    Object.entries(grouped).forEach(([senderName, transfers]) => {
+        const div = document.createElement('div');
+        div.className = 'notification';
+        
+        if (transfers.length > 1) {
+            const totalSize = transfers.reduce((s, t) => s + t.size, 0);
+            div.innerHTML = `
+                <div style="border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px; margin-bottom: 10px;">
+                    <p><strong>${senderName}</strong> is sending <strong>${transfers.length} files</strong>:</p>
+                    <p style="font-size: 0.9rem; opacity: 0.8;">Total: ${formatBytes(totalSize)}</p>
+                </div>
+                <div style="max-height: 150px; overflow-y: auto; margin: 10px 0; background: rgba(0,0,0,0.2); border-radius: 8px; padding: 5px;">
+                    ${transfers.map(t => `
+                        <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); gap: 10px;">
+                            <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 0.85rem;" title="${t.filename}">
+                                ${t.filename} <span style="opacity: 0.6; font-size: 0.75rem;">(${formatBytes(t.size)})</span>
+                            </div>
+                            <div style="display: flex; gap: 5px;">
+                                <button class="btn btn-primary" style="padding: 2px 8px; font-size: 0.7rem;" onclick="acceptTransfer('${t.transfer_id}', '${t.filename}', ${t.size})">
+                                    <i class="fas fa-check"></i>
+                                </button>
+                                <button class="btn" style="padding: 2px 8px; font-size: 0.7rem; background: var(--danger); color: white;" onclick="declineTransfer('${t.transfer_id}')">
+                                    <i class="fas fa-times"></i>
+                                </button>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 15px;">
+                    <button class="btn btn-primary" style="flex: 1" onclick="acceptAllFromSender('${senderName}')">Accept All</button>
+                    <button class="btn" style="background: var(--danger); color: white;" onclick="declineAllFromSender('${senderName}')">Decline All</button>
+                </div>
+            `;
+        } else {
+            const t = transfers[0];
+            div.innerHTML = `
+                <p><strong>${senderName}</strong> wants to send:</p>
+                <p style="font-size: 1.1rem; margin: 10px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${t.filename}</p>
+                <p style="font-size: 0.9rem; opacity: 0.8;">Size: ${formatBytes(t.size)}</p>
+                <div style="display: flex; gap: 8px; margin-top: 15px;">
+                    <button class="btn btn-primary" style="flex: 1" onclick="acceptTransfer('${t.transfer_id}', '${t.filename}', ${t.size})">Accept</button>
+                    <button class="btn" style="background: var(--danger); color: white;" onclick="declineTransfer('${t.transfer_id}')">Decline</button>
+                </div>
+            `;
+        }
+        container.appendChild(div);
+    });
+}
+
+function acceptTransfer(transferId, filename, size) {
+    incomingTransfers = incomingTransfers.filter(t => t.transfer_id !== transferId);
+    renderNotifications();
     triggerDownload(transferId, filename, size);
+}
+
+function declineTransfer(transferId) {
+    incomingTransfers = incomingTransfers.filter(t => t.transfer_id !== transferId);
+    renderNotifications();
+}
+
+function acceptAllFromSender(senderName) {
+    const toAccept = incomingTransfers.filter(t => t.sender_name === senderName);
+    incomingTransfers = incomingTransfers.filter(t => t.sender_name !== senderName);
+    renderNotifications();
+    
+    // Staggered trigger to ensure clean browser behavior
+    toAccept.forEach((t, i) => {
+        setTimeout(() => triggerDownload(t.transfer_id, t.filename, t.size), i * 300);
+    });
+}
+
+function declineAllFromSender(senderName) {
+    incomingTransfers = incomingTransfers.filter(t => t.sender_name !== senderName);
+    renderNotifications();
 }
 
 function triggerDownload(transferId, filename, size) {
