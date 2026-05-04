@@ -103,14 +103,17 @@ function handleFile(file) {
         size: file.size
     }));
     
-    showTransferStatus('waiting', `Asking ${document.getElementById('target-name').innerText} to accept...`);
+    showTransferStatus('request', 'waiting', `Asking ${document.getElementById('target-name').innerText} to accept...`);
 }
 
 async function startUpload(transferId) {
     if (!pendingFile) return;
     
-    const startTime = new Date();
-    showTransferStatus(transferId, 'uploading', `Sending ${pendingFile.name}...`, 0);
+    // Clear the request card
+    const requestCard = document.getElementById('transfer-request');
+    if (requestCard) requestCard.remove();
+    
+    showTransferStatus(transferId, 'uploading', `Sending ${pendingFile.name}...`, 0, pendingFile.size);
     
     const formData = new FormData();
     // We don't use conventional FormData because we want to stream from the body directly
@@ -125,7 +128,7 @@ async function startUpload(transferId) {
         });
 
         if (response.ok) {
-            showTransferStatus('done', `Finished sending ${pendingFile.name}`);
+            showTransferStatus(transferId, 'done', `Finished sending ${pendingFile.name}`);
         }
     } catch (err) {
         console.error("Upload failed", err);
@@ -141,14 +144,14 @@ function showIncomingNotification(data) {
         <p><strong>${data.sender_name}</strong> wants to send you:</p>
         <p style="font-size: 1.1rem; margin: 10px 0;">${data.filename} (${formatBytes(data.size)})</p>
         <div style="display: flex; gap: 10px; margin-top: 15px;">
-            <button class="btn btn-primary" onclick="acceptTransfer('${data.transfer_id}', this)">Accept</button>
+            <button class="btn btn-primary" onclick="acceptTransfer('${data.transfer_id}', this, ${data.size})">Accept</button>
             <button class="btn" style="background: var(--danger); color: white;" onclick="this.parentElement.parentElement.remove()">Decline</button>
         </div>
     `;
     container.appendChild(div);
 }
 
-function acceptTransfer(transferId, btn) {
+function acceptTransfer(transferId, btn, size) {
     ws.send(JSON.stringify({
         type: 'transfer_accept',
         transfer_id: transferId
@@ -165,7 +168,7 @@ function acceptTransfer(transferId, btn) {
         </div>
         <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted);">
             <span id="percent-${transferId}">0%</span>
-            <span id="size-${transferId}">0 / 0</span>
+            <span id="size-${transferId}">0 / ${formatBytes(size)}</span>
         </div>
     `;
     
@@ -201,11 +204,15 @@ function updateDownloadProgress(data) {
         
         // Calculate rate
         const now = Date.now();
-        const last = lastProgress[data.transfer_id] || { time: now, bytes: 0 };
+        if (!lastProgress[data.transfer_id]) {
+            lastProgress[data.transfer_id] = { time: now, bytes: data.bytes_sent };
+        }
+        
+        const last = lastProgress[data.transfer_id];
         const deltaBytes = data.bytes_sent - last.bytes;
         const deltaTime = (now - last.time) / 1000;
         
-        if (deltaTime >= 0.5) {
+        if (deltaTime >= 0.5 && deltaBytes > 0) {
             const kbps = (deltaBytes / 1024) / deltaTime;
             rate.innerText = kbps > 1024 ? `${(kbps/1024).toFixed(2)} MB/s` : `${kbps.toFixed(1)} KB/s`;
             lastProgress[data.transfer_id] = { time: now, bytes: data.bytes_sent };
@@ -213,7 +220,7 @@ function updateDownloadProgress(data) {
     }
 }
 
-function showTransferStatus(transferId, status, text, progress = null) {
+function showTransferStatus(transferId, status, text, progress = null, totalSize = 0) {
     const container = document.getElementById('status-container');
     let card = document.getElementById(`transfer-${transferId}`);
     
@@ -224,6 +231,8 @@ function showTransferStatus(transferId, status, text, progress = null) {
         container.appendChild(card);
     }
     
+    const displaySize = totalSize > 0 ? `0 / ${formatBytes(totalSize)}` : '0 / 0';
+    
     card.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: start;">
             <p style="font-weight: 600;">${status === 'done' ? 'Success' : 'Transfer Progress'}</p>
@@ -233,7 +242,7 @@ function showTransferStatus(transferId, status, text, progress = null) {
         <div class="progress-container"><div class="progress-bar" id="pb-${transferId}" style="width: ${progress || 0}%"></div></div>
         <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted); margin-top: 5px;">
             <span id="percent-${transferId}">${progress || 0}%</span>
-            <span id="size-${transferId}">0 / 0</span>
+            <span id="size-${transferId}">${displaySize}</span>
         </div>
         <p style="font-size: 0.7rem; color: var(--text-muted); margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 5px;">Date: ${new Date().toLocaleTimeString()}</p>
     `;
