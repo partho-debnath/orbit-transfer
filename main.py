@@ -149,7 +149,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
 
                 if group_id and group_id in manager.groups:
                     group = manager.groups[group_id]
-                    member_ids = list(group["members"])
+                    # All participants excluding the sender
+                    participants = group["members"] | {group["creator_id"]}
+                    member_ids = list(participants - {client_id})
+                    
                     transfers[transfer_id] = {
                         "queues": {mid: asyncio.Queue(maxsize=10) for mid in member_ids},
                         "filename": filename,
@@ -165,9 +168,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
                     }
                     if not member_ids:
                         transfers[transfer_id]["all_accepted"].set()
+                    
                     notification = json.dumps({
                         "type": "incoming_transfer",
                         "transfer_id": transfer_id,
+                        "group_id": group_id,
                         "sender_name": f"Group: {group['name']}",
                         "filename": filename,
                         "size": size,

@@ -564,9 +564,11 @@ async function processUploadQueue() {
 function handleIncomingTransfer(data) {
     let isGroupMember = false;
     if (data.is_group) {
-        const groupName = data.sender_name.replace("Group: ", "");
-        const group = Object.values(groupData).find(g => g.name === groupName);
-        if (group && group.members.includes(clientId)) {
+        // Use group_id if available, otherwise fallback to group name lookup
+        const group = data.group_id ? groupData[data.group_id] : Object.values(groupData).find(g => g.name === data.sender_name.replace("Group: ", ""));
+        
+        // Check if I'm a participant (member or creator) in this group
+        if (group && (group.members.includes(clientId) || group.creator_id === clientId)) {
             isGroupMember = true;
         }
     }
