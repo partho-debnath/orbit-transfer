@@ -654,11 +654,11 @@ class OrbitAnimation {
 
     init() {
         // Init Stars
-        for (let i = 0; i < 150; i++) {
+        for (let i = 0; i < 250; i++) {
             this.stars.push({
                 x: Math.random() * this.canvas.width,
                 y: Math.random() * this.canvas.height,
-                size: Math.random() * 1.5,
+                size: Math.random() * 2,
                 opacity: Math.random(),
                 speed: 0.005 + Math.random() * 0.01
             });
@@ -670,8 +670,8 @@ class OrbitAnimation {
                 radius: 200 + i * 150,
                 angle: Math.random() * Math.PI * 2,
                 speed: 0.0002 + Math.random() * 0.0005,
-                width: 1,
-                color: `rgba(129, 140, 248, ${0.05 + Math.random() * 0.1})`
+                width: 1.5,
+                color: `rgba(129, 140, 248, ${0.2 + Math.random() * 0.2})`
             });
         }
     }
@@ -719,9 +719,9 @@ class OrbitAnimation {
             const nodeY = centerY + Math.sin(ring.angle * 2) * (ring.radius * 0.6);
             
             this.ctx.beginPath();
-            this.ctx.arc(nodeX, nodeY, 4, 0, Math.PI * 2);
-            this.ctx.fillStyle = 'rgba(129, 140, 248, 0.4)';
-            this.ctx.shadowBlur = 10;
+            this.ctx.arc(nodeX, nodeY, 6, 0, Math.PI * 2);
+            this.ctx.fillStyle = '#818cf8';
+            this.ctx.shadowBlur = 15;
             this.ctx.shadowColor = '#818cf8';
             this.ctx.fill();
             this.ctx.shadowBlur = 0;

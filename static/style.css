@@ -24,8 +24,6 @@ body {
     color: var(--text-main);
     min-height: 100vh;
     display: flex;
-    justify-content: center;
-    align-items: center;
     overflow: hidden;
     position: relative;
 }
@@ -103,22 +101,16 @@ body {
 }
 
 #app {
-    width: 95%;
-    max-width: 1200px;
-    height: 85vh;
-    background: var(--glass-bg);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
-    border: 1px solid var(--glass-border);
-    border-radius: 32px;
+    width: 100%;
+    height: 100vh;
+    background: rgba(15, 23, 42, 0.08);
+    /* Ultra-low opacity */
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(12px);
     display: flex;
     flex-direction: column;
-    box-shadow:
-        0 20px 50px -12px rgba(0, 0, 0, 0.5),
-        inset 0 1px 1px rgba(255, 255, 255, 0.1);
     position: relative;
     z-index: 1;
-    animation: scaleIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes scaleIn {
@@ -189,7 +181,7 @@ main {
     border-right: 1px solid var(--glass-border);
     padding: 24px;
     overflow-y: auto;
-    background: rgba(0, 0, 0, 0.1);
+    background: rgba(0, 0, 0, 0.05);
 }
 
 .section-label {
@@ -577,14 +569,9 @@ main {
 
 /* Responsive Design */
 @media (max-width: 1024px) {
-    #app {
-        width: 100%;
-        height: 100vh;
-        border-radius: 0;
-    }
-    
     .bg-blobs {
-        display: none;
+        display: block;
+        /* Keep animation visible */
     }
 }
 
@@ -592,20 +579,20 @@ main {
     main {
         flex-direction: column;
     }
-    
+
     .user-sidebar {
         width: 100%;
         height: 300px;
         border-right: none;
         border-bottom: 1px solid var(--glass-border);
     }
-    
+
     .transfer-card {
         width: calc(100vw - 48px);
         right: 24px;
         left: 24px;
     }
-    
+
     #notifications-container {
         width: calc(100vw - 48px);
         right: 24px;
@@ -617,23 +604,23 @@ main {
     header {
         padding: 16px;
     }
-    
+
     .logo-text {
         font-size: 1.25rem;
     }
-    
+
     .profile-card {
         padding: 4px 4px 4px 12px;
     }
-    
+
     input#username {
         width: 100px;
     }
-    
+
     .content-area {
         padding: 20px;
     }
-    
+
     .drop-zone {
         height: 240px;
     }
