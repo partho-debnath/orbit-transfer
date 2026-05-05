@@ -92,6 +92,44 @@
         </div>
     </div>
 
+    <!-- Create Group Modal -->
+    <div id="create-group-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content create-group-modal-content">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+                <h3 style="font-size: 1.25rem; font-weight: 700;">Create Orbit Group</h3>
+                <button onclick="closeCreateGroupModal()" class="btn-icon"><i class="fas fa-times"></i></button>
+            </div>
+            <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 18px;">
+                Name your new group and start inviting peers.
+            </p>
+            <div class="modal-input-wrap">
+                <label for="group-name-input" class="modal-input-label">Group Name</label>
+                <input type="text" id="group-name-input" class="modal-input" placeholder="e.g. Team Alpha" maxlength="48">
+            </div>
+            <div class="modal-actions">
+                <button class="btn-secondary" onclick="closeCreateGroupModal()">Cancel</button>
+                <button class="btn-accept" onclick="submitCreateGroup()">Create Group</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div id="confirm-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content confirm-modal-content">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <h3 id="confirm-modal-title" style="font-size: 1.2rem; font-weight: 700;">Confirm Action</h3>
+                <button id="confirm-modal-close" class="btn-icon"><i class="fas fa-times"></i></button>
+            </div>
+            <p id="confirm-modal-message" style="font-size: 0.92rem; color: var(--text-muted); margin-bottom: 22px;">
+                Are you sure?
+            </p>
+            <div class="modal-actions">
+                <button id="confirm-modal-cancel" class="btn-secondary">Cancel</button>
+                <button id="confirm-modal-confirm" class="btn-accept">Confirm</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/app.js"></script>
 </body>
 

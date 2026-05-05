@@ -14,6 +14,13 @@ let currentlyManagingGroupId = null;
 let pendingFiles = new Map(); // Key: transfer_id
 let pendingRequestFiles = new Map(); // Key: filename+size (temp)
 let incomingTransfers = []; // List of pending incoming transfer objects
+let confirmationResolver = null;
+let uploadQueue = [];
+let activeUploadTransferId = null;
+let downloadQueue = [];
+let activeDownloadTransferId = null;
+let activeDownloadFilename = '';
+let receiverBatch = { totalFiles: 0, completedFiles: 0 };
 
 function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -38,8 +45,7 @@ function connect() {
         } else if (data.type === 'transfer_approved') {
             const file = pendingFiles.get(data.transfer_id);
             if (file) {
-                startUpload(data.transfer_id, file);
-                // We keep it in the map until upload starts
+                queueUpload(data.transfer_id, file);
             }
         } else if (data.type === 'incoming_transfer') {
             handleIncomingTransfer(data);
@@ -85,7 +91,7 @@ function selectUser(user) {
     selectedGroupId = null;
     document.getElementById('target-name').innerText = user.name;
     document.getElementById('no-target').style.display = 'none';
-    document.getElementById('transfer-zone').style.display = 'block';
+    document.getElementById('transfer-zone').style.display = 'flex';
 
     document.querySelectorAll('.user-item').forEach(el => el.classList.remove('active'));
     event.currentTarget.classList.add('active');
@@ -130,34 +136,174 @@ function selectGroup(group, event) {
     selectedTargetId = null;
     document.getElementById('target-name').innerText = `Group: ${group.name}`;
     document.getElementById('no-target').style.display = 'none';
-    document.getElementById('transfer-zone').style.display = 'block';
+    document.getElementById('transfer-zone').style.display = 'flex';
 
     document.querySelectorAll('.user-item').forEach(el => el.classList.remove('active'));
     if (event) event.currentTarget.classList.add('active');
 }
 
 document.getElementById('btn-create-group').onclick = () => {
-    const name = prompt("Enter Group Name:");
-    if (name) {
-        ws.send(JSON.stringify({ type: 'create_group', name: name }));
-    }
+    openCreateGroupModal();
 };
 
-function deleteGroup(groupId) {
-    if (confirm("Are you sure you want to delete this group?")) {
-        ws.send(JSON.stringify({ type: 'delete_group', group_id: groupId }));
-        if (selectedGroupId === groupId) {
-            selectedGroupId = null;
-            document.getElementById('no-target').style.display = 'flex';
-            document.getElementById('transfer-zone').style.display = 'none';
+function openCreateGroupModal() {
+    const modal = document.getElementById('create-group-modal');
+    const input = document.getElementById('group-name-input');
+    input.value = '';
+    modal.style.display = 'flex';
+    requestAnimationFrame(() => modal.classList.add('show'));
+    setTimeout(() => input.focus(), 50);
+}
+
+function closeCreateGroupModal() {
+    const modal = document.getElementById('create-group-modal');
+    modal.classList.remove('show');
+    setTimeout(() => {
+        if (!modal.classList.contains('show')) {
+            modal.style.display = 'none';
         }
+    }, 260);
+}
+
+function submitCreateGroup() {
+    const input = document.getElementById('group-name-input');
+    const name = input.value.trim();
+    if (!name) {
+        input.focus();
+        return;
     }
+    ws.send(JSON.stringify({ type: 'create_group', name: name }));
+    closeCreateGroupModal();
+}
+
+function openConfirmationModal({
+    title = 'Confirm Action',
+    message = 'Are you sure?',
+    confirmText = 'Confirm',
+    danger = false
+} = {}) {
+    const modal = document.getElementById('confirm-modal');
+    const titleEl = document.getElementById('confirm-modal-title');
+    const messageEl = document.getElementById('confirm-modal-message');
+    const confirmBtn = document.getElementById('confirm-modal-confirm');
+
+    titleEl.innerText = title;
+    messageEl.innerText = message;
+    confirmBtn.innerText = confirmText;
+    confirmBtn.classList.toggle('btn-danger-solid', Boolean(danger));
+
+    modal.style.display = 'flex';
+    requestAnimationFrame(() => modal.classList.add('show'));
+
+    return new Promise((resolve) => {
+        confirmationResolver = resolve;
+    });
+}
+
+function closeConfirmationModal(confirmed = false) {
+    const modal = document.getElementById('confirm-modal');
+    modal.classList.remove('show');
+    setTimeout(() => {
+        if (!modal.classList.contains('show')) {
+            modal.style.display = 'none';
+        }
+    }, 260);
+
+    if (confirmationResolver) {
+        const resolve = confirmationResolver;
+        confirmationResolver = null;
+        resolve(confirmed);
+    }
+}
+
+document.getElementById('group-name-input').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        submitCreateGroup();
+    }
+});
+
+document.getElementById('create-group-modal').addEventListener('click', (event) => {
+    if (event.target.id === 'create-group-modal') {
+        closeCreateGroupModal();
+    }
+});
+
+document.getElementById('member-modal').addEventListener('click', (event) => {
+    if (event.target.id === 'member-modal') {
+        hideModal();
+    }
+});
+
+document.getElementById('confirm-modal').addEventListener('click', (event) => {
+    if (event.target.id === 'confirm-modal') {
+        closeConfirmationModal(false);
+    }
+});
+
+document.getElementById('confirm-modal-close').addEventListener('click', () => closeConfirmationModal(false));
+document.getElementById('confirm-modal-cancel').addEventListener('click', () => closeConfirmationModal(false));
+document.getElementById('confirm-modal-confirm').addEventListener('click', () => closeConfirmationModal(true));
+
+document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    const confirmModal = document.getElementById('confirm-modal');
+    const createModal = document.getElementById('create-group-modal');
+    const memberModal = document.getElementById('member-modal');
+    if (confirmModal.style.display === 'flex') {
+        closeConfirmationModal(false);
+    } else if (createModal.style.display === 'flex') {
+        closeCreateGroupModal();
+    } else if (memberModal.style.display === 'flex') {
+        hideModal();
+    }
+});
+
+async function deleteGroup(groupId) {
+    const confirmed = await openConfirmationModal({
+        title: 'Delete Orbit Group?',
+        message: 'This will permanently delete this group for everyone in it.',
+        confirmText: 'Delete Group',
+        danger: true
+    });
+
+    if (!confirmed) return;
+
+    ws.send(JSON.stringify({ type: 'delete_group', group_id: groupId }));
+    if (selectedGroupId === groupId) {
+        selectedGroupId = null;
+        document.getElementById('no-target').style.display = 'flex';
+        document.getElementById('transfer-zone').style.display = 'none';
+    }
+}
+
+async function confirmMemberRemoval() {
+    return openConfirmationModal({
+        title: 'Remove Member?',
+        message: 'This member will be removed from the group immediately.',
+        confirmText: 'Remove Member',
+        danger: true
+    });
+}
+
+function actionForRowMarkup(isCreator, groupId, mid, isPending = false) {
+    if (!isCreator) return '';
+    const safeGroupId = String(groupId).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const safeMemberId = String(mid).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const tintStyle = isPending
+        ? 'background: rgba(255,255,255,0.05); color: var(--text-muted);'
+        : 'background: rgba(244, 63, 94, 0.1); color: var(--danger);';
+    const title = isPending ? 'Cancel Invite' : 'Remove Member';
+    const icon = isPending ? 'fas fa-times' : 'fas fa-user-minus';
+    return `<button class="btn-icon" style="${tintStyle}" onclick="removeMember('${safeGroupId}', '${safeMemberId}')" title="${title}"><i class="${icon}"></i></button>`;
 }
 
 function addMemberPrompt(groupId) {
     currentlyManagingGroupId = groupId;
     renderModalContent(groupId);
-    document.getElementById('member-modal').style.display = 'flex';
+    const modal = document.getElementById('member-modal');
+    modal.style.display = 'flex';
+    requestAnimationFrame(() => modal.classList.add('show'));
 }
 
 function renderModalContent(groupId) {
@@ -196,7 +342,7 @@ function renderModalContent(groupId) {
                     </div>
                     <span style="font-weight: 500;">${user.name}</span>
                 </div>
-                ${isCreator ? `<button class="btn-icon" style="background: rgba(244, 63, 94, 0.1); color: var(--danger);" onclick="removeMember('${groupId}', '${mid}')" title="Remove Member"><i class="fas fa-user-minus"></i></button>` : ''}
+                ${actionForRowMarkup(isCreator, groupId, mid, false)}
             `;
             memberList.appendChild(div);
         });
@@ -220,7 +366,7 @@ function renderModalContent(groupId) {
                     </div>
                     <span style="font-weight: 500;">${user.name}</span>
                 </div>
-                ${isCreator ? `<button class="btn-icon" style="background: rgba(255,255,255,0.05); color: var(--text-muted);" onclick="removeMember('${groupId}', '${mid}')" title="Cancel Invite"><i class="fas fa-times"></i></button>` : ''}
+                ${actionForRowMarkup(isCreator, groupId, mid, true)}
             `;
             pendingList.appendChild(div);
         });
@@ -258,14 +404,20 @@ function addMember(groupId, memberId) {
     ws.send(JSON.stringify({ type: 'add_member', group_id: groupId, member_id: memberId }));
 }
 
-function removeMember(groupId, memberId) {
-    if (confirm("Remove this member?")) {
-        ws.send(JSON.stringify({ type: 'remove_member', group_id: groupId, member_id: memberId }));
-    }
+async function removeMember(groupId, memberId) {
+    const confirmed = await confirmMemberRemoval();
+    if (!confirmed) return;
+    ws.send(JSON.stringify({ type: 'remove_member', group_id: groupId, member_id: memberId }));
 }
 
 function hideModal() {
-    document.getElementById('member-modal').style.display = 'none';
+    const modal = document.getElementById('member-modal');
+    modal.classList.remove('show');
+    setTimeout(() => {
+        if (!modal.classList.contains('show')) {
+            modal.style.display = 'none';
+        }
+    }, 260);
     currentlyManagingGroupId = null;
 }
 
@@ -392,6 +544,23 @@ async function startUpload(transferId, file) {
     }
 }
 
+function queueUpload(transferId, file) {
+    uploadQueue.push({ transferId, file });
+    processUploadQueue();
+}
+
+async function processUploadQueue() {
+    if (activeUploadTransferId || uploadQueue.length === 0) return;
+    const next = uploadQueue.shift();
+    activeUploadTransferId = next.transferId;
+    try {
+        await startUpload(next.transferId, next.file);
+    } finally {
+        activeUploadTransferId = null;
+        processUploadQueue();
+    }
+}
+
 function handleIncomingTransfer(data) {
     let isGroupMember = false;
     if (data.is_group) {
@@ -403,9 +572,7 @@ function handleIncomingTransfer(data) {
     }
 
     if (isGroupMember) {
-        setTimeout(() => {
-            triggerDownload(data.transfer_id, data.filename, data.size);
-        }, 500);
+        enqueueDownload(data.transfer_id, data.filename, data.size);
         return;
     }
 
@@ -429,6 +596,7 @@ function renderNotifications() {
         
         if (transfers.length > 1) {
             const totalSize = transfers.reduce((s, t) => s + t.size, 0);
+            const listMaxHeight = transfers.length >= 10 ? '340px' : (transfers.length >= 6 ? '260px' : '160px');
             div.innerHTML = `
                 <div class="notification-header">
                     <div class="notification-icon">
@@ -438,7 +606,7 @@ function renderNotifications() {
                         <p class="notification-title">Batch Orbit Request</p>
                         <p class="notification-subtitle"><strong>${senderName}</strong> is sending <strong>${transfers.length} files</strong> (${formatBytes(totalSize)})</p>
                         
-                        <div class="file-list-compact">
+                        <div class="file-list-compact" style="max-height: ${listMaxHeight};">
                             ${transfers.map(t => `
                                 <div class="file-item-compact">
                                     <div class="file-name-compact" title="${t.filename}">
@@ -490,7 +658,7 @@ function renderNotifications() {
 function acceptTransfer(transferId, filename, size) {
     incomingTransfers = incomingTransfers.filter(t => t.transfer_id !== transferId);
     renderNotifications();
-    triggerDownload(transferId, filename, size);
+    enqueueDownload(transferId, filename, size);
 }
 
 function declineTransfer(transferId) {
@@ -502,11 +670,7 @@ function acceptAllFromSender(senderName) {
     const toAccept = incomingTransfers.filter(t => t.sender_name === senderName);
     incomingTransfers = incomingTransfers.filter(t => t.sender_name !== senderName);
     renderNotifications();
-    
-    // Staggered trigger to ensure clean browser behavior
-    toAccept.forEach((t, i) => {
-        setTimeout(() => triggerDownload(t.transfer_id, t.filename, t.size), i * 300);
-    });
+    toAccept.forEach((t) => enqueueDownload(t.transfer_id, t.filename, t.size));
 }
 
 function declineAllFromSender(senderName) {
@@ -514,14 +678,29 @@ function declineAllFromSender(senderName) {
     renderNotifications();
 }
 
-function triggerDownload(transferId, filename, size) {
+function enqueueDownload(transferId, filename, size) {
+    downloadQueue.push({ transferId, filename, size });
+    receiverBatch.totalFiles += 1;
+    updateReceiverBatchStatus(`Queued ${receiverBatch.totalFiles} file${receiverBatch.totalFiles > 1 ? 's' : ''} for download...`);
+    processDownloadQueue();
+}
+
+function processDownloadQueue() {
+    if (activeDownloadTransferId || downloadQueue.length === 0) return;
+    const next = downloadQueue.shift();
+    activeDownloadTransferId = next.transferId;
+    activeDownloadFilename = next.filename;
+    startDownloadTransfer(next.transferId, next.filename, next.size);
+}
+
+function startDownloadTransfer(transferId, filename, size) {
     ws.send(JSON.stringify({
         type: 'transfer_accept',
         transfer_id: transferId
     }));
 
     transferRoles[transferId] = 'receiver';
-    showTransferStatus(transferId, 'receiving', `Receiving ${filename}...`, 0, size);
+    updateReceiverBatchStatus(`Receiving ${filename} (${receiverBatch.completedFiles + 1}/${receiverBatch.totalFiles})`);
 
     lastProgress[transferId] = { time: Date.now(), bytes: 0 };
 
@@ -535,9 +714,66 @@ function triggerDownload(transferId, filename, size) {
 
 let lastProgress = {};
 
+function updateReceiverBatchStatus(text, progress = 0, isDone = false) {
+    const transferId = 'receiver-batch';
+    const status = isDone ? 'done' : 'receiving';
+    const total = receiverBatch.totalFiles || 1;
+    const completed = Math.min(receiverBatch.completedFiles, total);
+    const totalSizeForDisplay = total;
+
+    showTransferStatus(
+        transferId,
+        status,
+        text,
+        progress,
+        totalSizeForDisplay
+    );
+
+    const sizeEl = document.getElementById(`size-${transferId}`);
+    if (sizeEl) {
+        sizeEl.innerText = `${completed} / ${total} files`;
+    }
+}
+
 function updateDownloadProgress(data) {
+    const role = transferRoles[data.transfer_id];
+
+    if (role === 'receiver') {
+        if (data.status === 'complete') {
+            if (data.transfer_id === activeDownloadTransferId) {
+                receiverBatch.completedFiles += 1;
+                activeDownloadTransferId = null;
+                activeDownloadFilename = '';
+            }
+
+            if (receiverBatch.completedFiles >= receiverBatch.totalFiles && receiverBatch.totalFiles > 0) {
+                updateReceiverBatchStatus('All downloads complete', 100, true);
+                receiverBatch = { totalFiles: 0, completedFiles: 0 };
+                downloadQueue = [];
+            } else {
+                const baseProgress = receiverBatch.totalFiles > 0
+                    ? Math.round((receiverBatch.completedFiles / receiverBatch.totalFiles) * 100)
+                    : 0;
+                updateReceiverBatchStatus(
+                    `Downloaded ${receiverBatch.completedFiles}/${receiverBatch.totalFiles} file${receiverBatch.totalFiles > 1 ? 's' : ''}...`,
+                    baseProgress
+                );
+                processDownloadQueue();
+            }
+        } else {
+            const perFileProgress = Math.max(0, Math.min(100, data.percentage || 0));
+            const overallProgress = receiverBatch.totalFiles > 0
+                ? Math.round(((receiverBatch.completedFiles + (perFileProgress / 100)) / receiverBatch.totalFiles) * 100)
+                : perFileProgress;
+            const label = activeDownloadFilename
+                ? `Receiving ${activeDownloadFilename} (${receiverBatch.completedFiles + 1}/${receiverBatch.totalFiles})`
+                : `Receiving files (${receiverBatch.completedFiles + 1}/${receiverBatch.totalFiles})`;
+            updateReceiverBatchStatus(label, overallProgress);
+        }
+        return;
+    }
+
     if (data.status === 'complete') {
-        const role = transferRoles[data.transfer_id];
         const msg = role === 'sender' ? 'File transfer complete' : 'File download complete';
         showTransferStatus(data.transfer_id, 'done', msg, 100, data.total_size);
         return;
