@@ -625,3 +625,155 @@ function formatBytes(bytes, decimals = 2) {
 }
 
 connect();
+
+// --- Background Animation Logic ---
+
+class OrbitAnimation {
+    constructor() {
+        this.canvas = document.getElementById('bg-canvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.stars = [];
+        this.shootingStars = [];
+        this.rings = [];
+        this.mouse = { x: -1000, y: -1000 };
+        this.resize();
+        this.init();
+        this.animate();
+
+        window.addEventListener('resize', () => this.resize());
+        window.addEventListener('mousemove', (e) => {
+            this.mouse.x = e.clientX;
+            this.mouse.y = e.clientY;
+        });
+    }
+
+    resize() {
+        this.canvas.width = window.innerWidth;
+        this.canvas.height = window.innerHeight;
+    }
+
+    init() {
+        // Init Stars
+        for (let i = 0; i < 150; i++) {
+            this.stars.push({
+                x: Math.random() * this.canvas.width,
+                y: Math.random() * this.canvas.height,
+                size: Math.random() * 1.5,
+                opacity: Math.random(),
+                speed: 0.005 + Math.random() * 0.01
+            });
+        }
+
+        // Init Rings (Orbital Rings)
+        for (let i = 0; i < 3; i++) {
+            this.rings.push({
+                radius: 200 + i * 150,
+                angle: Math.random() * Math.PI * 2,
+                speed: 0.0002 + Math.random() * 0.0005,
+                width: 1,
+                color: `rgba(129, 140, 248, ${0.05 + Math.random() * 0.1})`
+            });
+        }
+    }
+
+    drawStars() {
+        this.stars.forEach(star => {
+            star.opacity += star.speed;
+            if (star.opacity > 1 || star.opacity < 0) star.speed = -star.speed;
+            
+            // Mouse interaction
+            let dx = this.mouse.x - star.x;
+            let dy = this.mouse.y - star.y;
+            let dist = Math.sqrt(dx * dx + dy * dy);
+            let shiftX = 0;
+            let shiftY = 0;
+
+            if (dist < 150) {
+                let force = (150 - dist) / 150;
+                shiftX = (dx / dist) * force * -20;
+                shiftY = (dy / dist) * force * -20;
+            }
+
+            this.ctx.beginPath();
+            this.ctx.arc(star.x + shiftX, star.y + shiftY, star.size, 0, Math.PI * 2);
+            this.ctx.fillStyle = `rgba(255, 255, 255, ${Math.abs(star.opacity)})`;
+            this.ctx.fill();
+        });
+    }
+
+    drawRings() {
+        const centerX = this.canvas.width / 2;
+        const centerY = this.canvas.height / 2;
+
+        this.rings.forEach(ring => {
+            ring.angle += ring.speed;
+            
+            this.ctx.beginPath();
+            this.ctx.ellipse(centerX, centerY, ring.radius, ring.radius * 0.6, ring.angle, 0, Math.PI * 2);
+            this.ctx.strokeStyle = ring.color;
+            this.ctx.lineWidth = ring.width;
+            this.ctx.stroke();
+
+            // Draw a small "planet" or "node" on the ring
+            const nodeX = centerX + Math.cos(ring.angle * 2) * ring.radius;
+            const nodeY = centerY + Math.sin(ring.angle * 2) * (ring.radius * 0.6);
+            
+            this.ctx.beginPath();
+            this.ctx.arc(nodeX, nodeY, 4, 0, Math.PI * 2);
+            this.ctx.fillStyle = 'rgba(129, 140, 248, 0.4)';
+            this.ctx.shadowBlur = 10;
+            this.ctx.shadowColor = '#818cf8';
+            this.ctx.fill();
+            this.ctx.shadowBlur = 0;
+        });
+    }
+
+    createShootingStar() {
+        if (Math.random() < 0.01 && this.shootingStars.length < 3) {
+            this.shootingStars.push({
+                x: Math.random() * this.canvas.width,
+                y: Math.random() * this.canvas.height * 0.5,
+                len: 100 + Math.random() * 150,
+                speed: 10 + Math.random() * 15,
+                opacity: 1
+            });
+        }
+    }
+
+    drawShootingStars() {
+        this.shootingStars.forEach((s, i) => {
+            s.x -= s.speed;
+            s.y += s.speed * 0.5;
+            s.opacity -= 0.02;
+
+            if (s.opacity <= 0) {
+                this.shootingStars.splice(i, 1);
+                return;
+            }
+
+            const gradient = this.ctx.createLinearGradient(s.x, s.y, s.x + s.len, s.y - s.len * 0.5);
+            gradient.addColorStop(0, `rgba(255, 255, 255, ${s.opacity})`);
+            gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+            this.ctx.beginPath();
+            this.ctx.moveTo(s.x, s.y);
+            this.ctx.lineTo(s.x + s.len, s.y - s.len * 0.5);
+            this.ctx.strokeStyle = gradient;
+            this.ctx.lineWidth = 2;
+            this.ctx.stroke();
+        });
+    }
+
+    animate() {
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        
+        this.drawStars();
+        this.drawRings();
+        this.createShootingStar();
+        this.drawShootingStars();
+        
+        requestAnimationFrame(() => this.animate());
+    }
+}
+
+new OrbitAnimation();
