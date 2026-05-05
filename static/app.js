@@ -769,6 +769,25 @@ function updateDownloadProgress(data) {
                 ? `Receiving ${activeDownloadFilename} (${receiverBatch.completedFiles + 1}/${receiverBatch.totalFiles})`
                 : `Receiving files (${receiverBatch.completedFiles + 1}/${receiverBatch.totalFiles})`;
             updateReceiverBatchStatus(label, overallProgress);
+
+            // Calculate rate for receiver
+            const rateEl = document.getElementById('rate-receiver-batch');
+            if (rateEl) {
+                const now = Date.now();
+                if (!lastProgress[data.transfer_id]) {
+                    lastProgress[data.transfer_id] = { time: now, bytes: data.bytes_sent };
+                }
+
+                const last = lastProgress[data.transfer_id];
+                const deltaBytes = data.bytes_sent - last.bytes;
+                const deltaTime = (now - last.time) / 1000;
+
+                if (deltaTime >= 0.3 && deltaBytes > 0) {
+                    const kbps = (deltaBytes / 1024) / deltaTime;
+                    rateEl.innerText = kbps > 1024 ? `${(kbps / 1024).toFixed(2)} MB/s` : `${kbps.toFixed(1)} KB/s`;
+                    lastProgress[data.transfer_id] = { time: now, bytes: data.bytes_sent };
+                }
+            }
         }
         return;
     }
@@ -810,38 +829,54 @@ function updateDownloadProgress(data) {
 function showTransferStatus(transferId, status, text, progress = null, totalSize = 0) {
     const container = document.getElementById('status-container');
     let card = document.getElementById(`transfer-${transferId}`);
+    const isDone = status === 'done';
+    const displaySize = totalSize > 0 ? `0 / ${formatBytes(totalSize)}` : '0 / 0';
 
     if (!card) {
         card = document.createElement('div');
         card.id = `transfer-${transferId}`;
         card.className = 'transfer-card';
-        container.appendChild(card);
-    }
-
-    const displaySize = totalSize > 0 ? `0 / ${formatBytes(totalSize)}` : '0 / 0';
-    const isDone = status === 'done';
-
-    card.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <div style="display: flex; align-items: center; gap: 8px;">
-                <div style="width: 8px; height: 8px; border-radius: 50%; background: ${isDone ? 'var(--accent)' : 'var(--primary)'}; border-glow: 0 0 8px ${isDone ? 'var(--accent)' : 'var(--primary)'}"></div>
-                <p style="font-weight: 700; font-size: 0.9rem; letter-spacing: 0.02em;">${isDone ? 'COMPLETED' : 'ORBITING'}</p>
+        card.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <div id="light-${transferId}" style="width: 8px; height: 8px; border-radius: 50%; background: ${isDone ? 'var(--accent)' : 'var(--primary)'};"></div>
+                    <p id="status-text-${transferId}" style="font-weight: 700; font-size: 0.9rem; letter-spacing: 0.02em;">${isDone ? 'COMPLETED' : 'ORBITING'}</p>
+                </div>
+                <span id="rate-${transferId}" style="font-size: 0.75rem; font-weight: 600; color: var(--primary);">${isDone ? '' : '0 KB/s'}</span>
             </div>
-            <span id="rate-${transferId}" style="font-size: 0.75rem; font-weight: 600; color: var(--primary);">${isDone ? '' : '0 KB/s'}</span>
-        </div>
-        <p style="font-size: 0.85rem; color: var(--text-main); margin-bottom: 12px; font-weight: 500;">${text}</p>
-        <div class="progress-container">
-            <div class="progress-bar" id="pb-${transferId}" style="width: ${progress || 0}%"></div>
-        </div>
-        <div style="display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--text-muted); margin-top: 8px; font-weight: 600;">
-            <span id="percent-${transferId}">${progress || 0}%</span>
-            <span id="size-${transferId}">${displaySize}</span>
-        </div>
-    `;
+            <p id="label-${transferId}" style="font-size: 0.85rem; color: var(--text-main); margin-bottom: 12px; font-weight: 500;">${text}</p>
+            <div class="progress-container">
+                <div class="progress-bar" id="pb-${transferId}" style="width: ${progress || 0}%"></div>
+            </div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--text-muted); margin-top: 8px; font-weight: 600;">
+                <span id="percent-${transferId}">${progress || 0}%</span>
+                <span id="size-${transferId}">${displaySize}</span>
+            </div>
+        `;
+        container.appendChild(card);
+    } else {
+        // Update existing card elements to avoid layout thrashing and preserve the rate text
+        const light = document.getElementById(`light-${transferId}`);
+        const statusText = document.getElementById(`status-text-${transferId}`);
+        const label = document.getElementById(`label-${transferId}`);
+        const pb = document.getElementById(`pb-${transferId}`);
+        const percent = document.getElementById(`percent-${transferId}`);
+        
+        if (light) light.style.background = isDone ? 'var(--accent)' : 'var(--primary)';
+        if (statusText) statusText.innerText = isDone ? 'COMPLETED' : 'ORBITING';
+        if (label) label.innerText = text;
+        if (pb) pb.style.width = `${progress || 0}%`;
+        if (percent) percent.innerText = `${progress || 0}%`;
+        
+        // Note: size element is updated specially by updateReceiverBatchStatus for batches
+    }
 
     if (isDone) {
         card.style.borderColor = 'var(--accent)';
         card.style.boxShadow = '0 10px 30px rgba(16, 185, 129, 0.2)';
+        const rate = document.getElementById(`rate-${transferId}`);
+        if (rate) rate.innerText = '';
+        
         setTimeout(() => {
             card.style.transition = 'all 0.5s ease-out';
             card.style.opacity = '0';
