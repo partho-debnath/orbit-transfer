@@ -493,6 +493,35 @@ function selectUser(user) {
     event.currentTarget.classList.add('active');
 }
 
+// ── Group Icon Helpers ───────────────────────────────────────────────────────
+const GROUP_ICONS = [
+    { icon: 'fa-rocket',          bg: 'rgba(129,140,248,0.22)', color: '#818cf8' },
+    { icon: 'fa-user-astronaut',  bg: 'rgba(34,211,238,0.22)',  color: '#22d3ee' },
+    { icon: 'fa-satellite',       bg: 'rgba(167,139,250,0.22)', color: '#a78bfa' },
+    { icon: 'fa-meteor',          bg: 'rgba(251,146,60,0.22)',  color: '#fb923c' },
+    { icon: 'fa-shuttle-space',    bg: 'rgba(99,102,241,0.22)',  color: '#818cf8' },
+    { icon: 'fa-earth-americas',  bg: 'rgba(34,197,94,0.22)',   color: '#22c55e' },
+    { icon: 'fa-moon',            bg: 'rgba(226,232,240,0.2)',  color: '#f8fafc' },
+    { icon: 'fa-star',            bg: 'rgba(250,204,21,0.22)',  color: '#facc15' },
+    { icon: 'fa-satellite-dish',  bg: 'rgba(14,165,233,0.22)',  color: '#0ea5e9' },
+    { icon: 'fa-atom',            bg: 'rgba(244,114,182,0.22)', color: '#f472b6' },
+    { icon: 'fa-sun',             bg: 'rgba(249,115,22,0.22)',  color: '#f97316' },
+    { icon: 'fa-hand-spock',      bg: 'rgba(52,211,153,0.22)',  color: '#34d399' },
+    { icon: 'fa-circle-nodes',    bg: 'rgba(129,140,248,0.22)', color: '#818cf8' },
+    { icon: 'fa-user-secret',     bg: 'rgba(71,85,105,0.25)',  color: '#94a3b8' }, 
+    { icon: 'fa-bolt-lightning',  bg: 'rgba(253,224,71,0.22)',  color: '#fde047' }, 
+    { icon: 'fa-burst',           bg: 'rgba(239,68,68,0.22)',   color: '#ef4444' }, 
+];
+
+function getGroupVisual(groupId) {
+    // Hash the group ID to a stable index so the same group always gets the same icon
+    let hash = 0;
+    for (let i = 0; i < groupId.length; i++) {
+        hash = (hash * 31 + groupId.charCodeAt(i)) >>> 0;
+    }
+    return GROUP_ICONS[hash % GROUP_ICONS.length];
+}
+
 // ── Group List UI ─────────────────────────────────────────────────────────────
 function updateGroupList(groups) {
     const list = document.getElementById('group-list');
@@ -502,9 +531,10 @@ function updateGroupList(groups) {
         const li = document.createElement('li');
         li.className = `user-item ${selectedGroupId === group.id ? 'active' : ''}`;
         const isCreator = group.creator_id === clientId;
+        const gv = getGroupVisual(group.id);
         li.innerHTML = `
-            <div class="user-avatar" style="background:rgba(129,140,248,0.15);color:var(--primary);">
-                <i class="fas fa-users-viewfinder"></i>
+            <div class="user-avatar" style="background:${gv.bg};color:${gv.color};box-shadow:0 0 15px ${gv.color}33;">
+                <i class="fa-solid ${gv.icon}"></i>
             </div>
             <div class="user-info">
                 <div class="user-name">${group.name}</div>
