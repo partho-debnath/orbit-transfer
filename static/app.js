@@ -44,10 +44,13 @@ function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${protocol}//${window.location.host}/ws/${encodeURIComponent(clientId)}/${encodeURIComponent(userName)}`);
 
-    if (window.location.protocol === 'http:' && isMobile && window.location.hostname !== 'localhost') {
+    // One-time warning for mobile on HTTP (only shown once per session)
+    if (window.location.protocol === 'http:' && isMobile && window.location.hostname !== 'localhost'
+        && !sessionStorage.getItem('orbit_http_warned')) {
+        sessionStorage.setItem('orbit_http_warned', '1');
         setTimeout(() => {
-            showTransferError('Security Restriction', 'Mobile browsers often block file sharing over HTTP. Please use HTTPS or access from a Desktop if transfer fails.');
-        }, 1000);
+            showTransferError('⚠️ Mobile on HTTP', 'File transfer may fail. Open the app over HTTPS for best results on mobile.');
+        }, 1200);
     }
 
     ws.onmessage = (event) => {
@@ -337,13 +340,20 @@ function setupReceiveDataChannel(dc, transferId, senderId) {
                 clearTimeout(state.stallTimer);
                 const blob = new Blob(state.chunks, { type: 'application/octet-stream' });
                 const url  = URL.createObjectURL(blob);
-                
-                // Try automatic download
-                const a = document.createElement('a');
-                a.href = url; a.download = state.meta.filename;
-                document.body.appendChild(a); 
-                try { a.click(); } catch(e) { console.warn("Auto-download blocked", e); }
-                document.body.removeChild(a);
+
+                if (!isMobile) {
+                    // Desktop: auto-download via a hidden link in a new tab (safe, won't navigate away)
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = state.meta.filename;
+                    a.target = '_blank';
+                    a.rel = 'noopener';
+                    document.body.appendChild(a);
+                    try { a.click(); } catch(e) { console.warn('Auto-download blocked', e); }
+                    document.body.removeChild(a);
+                }
+                // Mobile: NEVER auto-click — it navigates the tab away from the app.
+                // User must tap the "Save to Device" button that appears below.
 
                 showTransferStatus(transferId, 'done', `Received ${state.meta.filename}`, 100, state.meta.size, url, state.meta.filename);
                 releaseWakeLock();
