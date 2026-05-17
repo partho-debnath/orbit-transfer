@@ -34,6 +34,8 @@ const peerConnections      = {}; // pcKey → RTCPeerConnection
 const pendingIceCandidates = {}; // pcKey → [RTCIceCandidateInit]
 const receiveState         = {}; // pcKey → { meta, chunks, bytesReceived, stallTimer }
 let   lastProgress         = {}; // transferId → { time, bytes }
+let   wakeLock             = null;
+const isMobile             = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
 function makePcKey(transferId, peerId) { return `${transferId}__${peerId}`; }
 
@@ -41,6 +43,12 @@ function makePcKey(transferId, peerId) { return `${transferId}__${peerId}`; }
 function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${protocol}//${window.location.host}/ws/${encodeURIComponent(clientId)}/${encodeURIComponent(userName)}`);
+
+    if (window.location.protocol === 'http:' && isMobile && window.location.hostname !== 'localhost') {
+        setTimeout(() => {
+            showTransferError('Security Restriction', 'Mobile browsers often block file sharing over HTTP. Please use HTTPS or access from a Desktop if transfer fails.');
+        }, 1000);
+    }
 
     ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
@@ -141,6 +149,7 @@ async function initiateWebRTCTransfer(transferId, receiverId, file) {
                 if (pc.iceConnectionState === 'failed') {
                     showTransferStatus(transferId, 'error', `Connection lost: ${file.name}`);
                     closePeerConnection(pcKey);
+                    releaseWakeLock();
                 }
             }, 5000);
         } else if (s === 'disconnected') {
@@ -155,6 +164,8 @@ async function initiateWebRTCTransfer(transferId, receiverId, file) {
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
+    requestWakeLock();
+    showTransferStatus(transferId, 'receiving', `Negotiating orbit...`, 0, file.size);
     ws.send(JSON.stringify({
         type: 'webrtc_offer', transfer_id: transferId, target_id: receiverId,
         sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp }
@@ -207,6 +218,7 @@ async function sendFileViaDataChannel(dc, file, transferId) {
 
     if (dc.readyState === 'open') dc.send(JSON.stringify({ type: 'file_done' }));
     showTransferStatus(transferId, 'done', `Sent ${file.name}`, 100, file.size);
+    releaseWakeLock();
 }
 
 // ── WebRTC Receiver ───────────────────────────────────────────────────────────
@@ -215,6 +227,9 @@ async function handleWebRTCOffer(data) {
     const pcKey = makePcKey(transfer_id, sender_id);
     const pc    = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConnections[pcKey] = pc;
+
+    requestWakeLock();
+    showTransferStatus(transfer_id, 'receiving', 'Establishing orbit...', 0);
 
     pc.ondatachannel = (event) => {
         const dc = event.channel;
@@ -322,11 +337,16 @@ function setupReceiveDataChannel(dc, transferId, senderId) {
                 clearTimeout(state.stallTimer);
                 const blob = new Blob(state.chunks, { type: 'application/octet-stream' });
                 const url  = URL.createObjectURL(blob);
-                const a    = document.createElement('a');
+                
+                // Try automatic download
+                const a = document.createElement('a');
                 a.href = url; a.download = state.meta.filename;
-                document.body.appendChild(a); a.click();
-                setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
-                showTransferStatus(transferId, 'done', `Received ${state.meta.filename}`, 100, state.meta.size);
+                document.body.appendChild(a); 
+                try { a.click(); } catch(e) { console.warn("Auto-download blocked", e); }
+                document.body.removeChild(a);
+
+                showTransferStatus(transferId, 'done', `Received ${state.meta.filename}`, 100, state.meta.size, url, state.meta.filename);
+                releaseWakeLock();
                 delete receiveState[pcKey];
                 closePeerConnection(pcKey);
             }
@@ -355,6 +375,7 @@ function setupReceiveDataChannel(dc, transferId, senderId) {
         }
         delete receiveState[pcKey];
         closePeerConnection(pcKey);
+        releaseWakeLock();
     };
 }
 
@@ -750,8 +771,19 @@ function showTransferError(filename, reason) {
     setTimeout(() => { div.style.transition='all 0.4s ease-out'; div.style.opacity='0'; div.style.transform='translateX(40px)'; setTimeout(()=>div.remove(),400); }, 6000);
 }
 
+// Wake Lock implementation
+async function requestWakeLock() {
+    if ('wakeLock' in navigator) {
+        try { if (!wakeLock) wakeLock = await navigator.wakeLock.request('screen'); }
+        catch (err) { console.error(`${err.name}, ${err.message}`); }
+    }
+}
+function releaseWakeLock() {
+    if (wakeLock) { wakeLock.release(); wakeLock = null; }
+}
+
 // ── Transfer Status Cards ─────────────────────────────────────────────────────
-function showTransferStatus(transferId, status, text, progress=null, totalSize=0) {
+function showTransferStatus(transferId, status, text, progress=null, totalSize=0, blobUrl=null, filename=null) {
     const container = document.getElementById('status-container');
     let card = document.getElementById(`transfer-${transferId}`);
     const isDone = status === 'done', isErr = status === 'error';
@@ -777,7 +809,31 @@ function showTransferStatus(transferId, status, text, progress=null, totalSize=0
         card.style.borderColor = isDone ? 'var(--accent)' : 'var(--danger)';
         card.style.boxShadow   = isDone ? '0 10px 30px rgba(16,185,129,0.2)' : '0 10px 30px rgba(244,63,94,0.15)';
         const rate = document.getElementById(`rate-${transferId}`); if (rate) rate.innerText = '';
-        setTimeout(() => { card.style.transition='all 0.5s ease-out'; card.style.opacity='0'; card.style.transform='translateX(50px)'; setTimeout(()=>card.remove(),500); }, 4000);
+        
+        if (isDone && blobUrl) {
+            // Add manual download button for mobile compatibility
+            const btnWrap = document.createElement('div');
+            btnWrap.style = 'margin-top:15px; display:flex; gap:8px;';
+            btnWrap.innerHTML = `
+                <a href="${blobUrl}" download="${filename}" class="btn-accept" style="text-decoration:none; display:inline-flex; align-items:center; gap:8px; width:100%; justify-content:center; padding:10px; font-size:0.8rem;">
+                    <i class="fas fa-download"></i> Save to Device
+                </a>
+            `;
+            // Remove existing manual buttons if updating
+            const existingBtn = card.querySelector('.manual-save-btn');
+            if (existingBtn) existingBtn.remove();
+            btnWrap.className = 'manual-save-btn';
+            card.appendChild(btnWrap);
+        }
+
+        const delay = (isDone && isMobile) ? 30000 : 6000; // Keep longer on mobile if done
+        setTimeout(() => { 
+            card.style.transition='all 0.5s ease-out'; card.style.opacity='0'; card.style.transform='translateX(50px)'; 
+            setTimeout(()=> {
+                if (blobUrl) URL.revokeObjectURL(blobUrl);
+                card.remove();
+            },500); 
+        }, delay);
     }
 }
 
