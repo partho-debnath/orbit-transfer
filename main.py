@@ -1,20 +1,18 @@
-import asyncio
 import uuid
-import ipaddress
+import os
 from typing import Dict
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import json
 
-def get_client_subnet(ip: str) -> str:
-    try:
-        network = ipaddress.ip_network(f"{ip}/24", strict=False)
-        return str(network.network_address)
-    except Exception:
-        return ip
+# ── Cloud Mode ────────────────────────────────────────────────────────────────
+# Set SUBNET_RESTRICT=true env var to enforce same-subnet-only visibility (local network mode).
+# Default is False so cloud deployments work: all connected users can see each other.
+SUBNET_RESTRICT = os.getenv("SUBNET_RESTRICT", "false").lower() == "true"
 
-app = FastAPI(title="Orbit Transfer", version="2.0.0")
+app = FastAPI(title="Orbit Transfer", version="3.0.0")
+
 
 class ConnectionManager:
     def __init__(self):
@@ -23,33 +21,53 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, client_id: str, name: str, client_ip: str):
         await websocket.accept()
-        subnet = get_client_subnet(client_ip)
         self.active_connections[client_id] = {
-            "websocket": websocket, "name": name,
-            "subnet": subnet, "ip": client_ip
+            "websocket": websocket, "name": name, "ip": client_ip
         }
-        await self.broadcast_users(subnet)
+        await self.broadcast_users(client_id)
         await self.send_user_groups(client_id)
 
     def disconnect(self, client_id: str):
-        subnet = None
         if client_id in self.active_connections:
-            subnet = self.active_connections[client_id].get("subnet")
             del self.active_connections[client_id]
-        return subnet
+            return True
+        return False
 
-    async def broadcast_users(self, subnet: str):
-        subnet_clients = {cid: info for cid, info in self.active_connections.items() if info["subnet"] == subnet}
-        users = [{"id": cid, "name": info["name"]} for cid, info in subnet_clients.items()]
+    async def broadcast_users(self, trigger_client_id: str):
+        """Broadcast user list to all users (cloud mode) or same-subnet users (local mode)."""
+        if SUBNET_RESTRICT:
+            trigger_info = self.active_connections.get(trigger_client_id)
+            if not trigger_info:
+                return
+            trigger_ip = trigger_info["ip"]
+            # Simple /24 subnet grouping
+            trigger_subnet = ".".join(trigger_ip.split(".")[:3])
+            clients = {
+                cid: info for cid, info in self.active_connections.items()
+                if ".".join(info["ip"].split(".")[:3]) == trigger_subnet
+            }
+        else:
+            clients = self.active_connections
+
+        users = [{"id": cid, "name": info["name"]} for cid, info in clients.items()]
         message = json.dumps({"type": "user_list", "users": users})
         to_remove = []
-        for cid, info in list(subnet_clients.items()):
+        for cid, info in list(clients.items()):
             try:
                 await info["websocket"].send_text(message)
-            except:
+            except Exception:
                 to_remove.append(cid)
         for cid in to_remove:
             self.disconnect(cid)
+
+    async def broadcast_all_users(self):
+        """Re-broadcast user list to every connected client (used on disconnect)."""
+        if not self.active_connections:
+            return
+        # Just pick one client to trigger a full broadcast
+        for cid in self.active_connections:
+            await self.broadcast_users(cid)
+            break
 
     async def send_user_groups(self, client_id: str):
         user_groups = []
@@ -61,11 +79,14 @@ class ConnectionManager:
                     "members": list(ginfo["members"]),
                     "pending": list(ginfo.get("pending", set()))
                 })
-        await self.send_personal_message(json.dumps({"type": "group_list", "groups": user_groups}), client_id)
+        await self.send_personal_message(
+            json.dumps({"type": "group_list", "groups": user_groups}), client_id
+        )
 
     async def broadcast_group_update(self, group_id: str):
         ginfo = self.groups.get(group_id)
-        if not ginfo: return
+        if not ginfo:
+            return
         all_concerned = ginfo["members"] | {ginfo["creator_id"]} | ginfo.get("pending", set())
         for cid in all_concerned:
             await self.send_user_groups(cid)
@@ -74,47 +95,54 @@ class ConnectionManager:
         if client_id in self.active_connections:
             try:
                 await self.active_connections[client_id]["websocket"].send_text(message)
-            except:
+            except Exception:
                 self.disconnect(client_id)
 
+
 manager = ConnectionManager()
-# Lightweight registry: transfer_id → { sender_id, filename, size }
+
+# transfer_id → { sender_id, receiver_id, filename, size }
 pending_transfers: Dict[str, Dict] = {}
+# transfer_id → { sender_id, receiver_id } — active WebSocket relay sessions
+relay_sessions: Dict[str, Dict] = {}
+
 
 @app.websocket("/ws/{client_id}/{name}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
-    client_ip = websocket.client.host if websocket.client else "127.0.0.1"
-    if client_ip in ("127.0.0.1", "::1"):
-        client_ip = "127.0.0.1"
+    # Respect X-Forwarded-For so it works behind nginx/caddy reverse proxies
+    x_forwarded = websocket.headers.get("x-forwarded-for")
+    if x_forwarded:
+        client_ip = x_forwarded.split(",")[0].strip()
+    else:
+        client_ip = websocket.client.host if websocket.client else "127.0.0.1"
 
     await manager.connect(websocket, client_id, name, client_ip)
     try:
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
+            mtype = msg.get("type", "")
 
-            if msg["type"] == "change_name":
+            # ── Name change ───────────────────────────────────────────────────
+            if mtype == "change_name":
                 if client_id in manager.active_connections:
                     manager.active_connections[client_id]["name"] = msg["name"]
-                    subnet = manager.active_connections[client_id]["subnet"]
-                    await manager.broadcast_users(subnet)
+                    await manager.broadcast_users(client_id)
 
-            elif msg["type"] == "create_group":
+            # ── Group management ──────────────────────────────────────────────
+            elif mtype == "create_group":
                 group_id = str(uuid.uuid4())[:8]
                 manager.groups[group_id] = {
                     "name": msg["name"], "creator_id": client_id,
-                    "members": set(), "pending": set(),
-                    "subnet": manager.active_connections[client_id]["subnet"]
+                    "members": set(), "pending": set()
                 }
                 await manager.send_user_groups(client_id)
 
-            elif msg["type"] == "add_member":
+            elif mtype == "add_member":
                 group_id = msg["group_id"]
                 member_id = msg["member_id"]
                 if group_id in manager.groups and manager.groups[group_id]["creator_id"] == client_id:
-                    member_info = manager.active_connections.get(member_id)
-                    sender_subnet = manager.active_connections[client_id]["subnet"]
-                    if member_info and member_info["subnet"] == sender_subnet:
+                    if member_id in manager.active_connections:
                         manager.groups[group_id]["pending"].add(member_id)
                         await manager.broadcast_group_update(group_id)
                         await manager.send_personal_message(json.dumps({
@@ -123,14 +151,14 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
                             "creator_name": manager.active_connections[client_id]["name"]
                         }), member_id)
 
-            elif msg["type"] == "group_invite_accept":
+            elif mtype == "group_invite_accept":
                 group_id = msg["group_id"]
                 if group_id in manager.groups and client_id in manager.groups[group_id]["pending"]:
                     manager.groups[group_id]["pending"].remove(client_id)
                     manager.groups[group_id]["members"].add(client_id)
                     await manager.broadcast_group_update(group_id)
 
-            elif msg["type"] == "remove_member":
+            elif mtype == "remove_member":
                 group_id = msg["group_id"]
                 member_id = msg["member_id"]
                 if group_id in manager.groups and manager.groups[group_id]["creator_id"] == client_id:
@@ -142,7 +170,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
                     if removed:
                         await manager.broadcast_group_update(group_id)
 
-            elif msg["type"] == "delete_group":
+            elif mtype == "delete_group":
                 group_id = msg["group_id"]
                 if group_id in manager.groups and manager.groups[group_id]["creator_id"] == client_id:
                     ginfo = manager.groups[group_id]
@@ -151,19 +179,21 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
                     for cid in all_concerned:
                         await manager.send_user_groups(cid)
 
-            elif msg["type"] == "transfer_request":
-                group_id = msg.get("group_id")
+            # ── File transfer request ─────────────────────────────────────────
+            elif mtype == "transfer_request":
+                group_id   = msg.get("group_id")
                 receiver_id = msg.get("target_id")
                 transfer_id = str(uuid.uuid4())
-                filename = msg["filename"]
-                size = msg["size"]
+                filename    = msg["filename"]
+                size        = msg["size"]
 
                 if group_id and group_id in manager.groups:
                     group = manager.groups[group_id]
                     participants = group["members"] | {group["creator_id"]}
                     member_ids = list(participants - {client_id})
                     pending_transfers[transfer_id] = {
-                        "sender_id": client_id, "filename": filename, "size": size, "group_id": group_id
+                        "sender_id": client_id, "filename": filename,
+                        "size": size, "group_id": group_id
                     }
                     notification = json.dumps({
                         "type": "incoming_transfer", "transfer_id": transfer_id,
@@ -174,32 +204,30 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
                     for mid in member_ids:
                         await manager.send_personal_message(notification, mid)
 
-                elif receiver_id:
-                    receiver_info = manager.active_connections.get(receiver_id)
-                    sender_subnet = manager.active_connections[client_id]["subnet"]
-                    if receiver_info and receiver_info["subnet"] == sender_subnet:
-                        pending_transfers[transfer_id] = {
-                            "sender_id": client_id, "filename": filename, "size": size
-                        }
-                        await manager.send_personal_message(json.dumps({
-                            "type": "incoming_transfer", "transfer_id": transfer_id,
-                            "sender_id": client_id,
-                            "sender_name": manager.active_connections[client_id]["name"],
-                            "filename": filename, "size": size, "is_group": False
-                        }), receiver_id)
-                    else:
-                        await manager.send_personal_message(json.dumps({
-                            "type": "transfer_error", "filename": filename,
-                            "reason": "Target user is not on your local network."
-                        }), client_id)
-                        continue
+                elif receiver_id and receiver_id in manager.active_connections:
+                    pending_transfers[transfer_id] = {
+                        "sender_id": client_id, "receiver_id": receiver_id,
+                        "filename": filename, "size": size
+                    }
+                    await manager.send_personal_message(json.dumps({
+                        "type": "incoming_transfer", "transfer_id": transfer_id,
+                        "sender_id": client_id,
+                        "sender_name": manager.active_connections[client_id]["name"],
+                        "filename": filename, "size": size, "is_group": False
+                    }), receiver_id)
+                else:
+                    await manager.send_personal_message(json.dumps({
+                        "type": "transfer_error", "filename": filename,
+                        "reason": "Target user is not connected."
+                    }), client_id)
+                    continue
 
                 await manager.send_personal_message(json.dumps({
                     "type": "transfer_initiated", "transfer_id": transfer_id,
                     "filename": filename, "size": size
                 }), client_id)
 
-            elif msg["type"] == "transfer_accept":
+            elif mtype == "transfer_accept":
                 transfer_id = msg["transfer_id"]
                 if transfer_id in pending_transfers:
                     transfer = pending_transfers[transfer_id]
@@ -209,7 +237,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
                         "receiver_id": client_id
                     }), transfer["sender_id"])
 
-            elif msg["type"] == "transfer_decline":
+            elif mtype == "transfer_decline":
                 transfer_id = msg["transfer_id"]
                 if transfer_id in pending_transfers:
                     transfer = pending_transfers[transfer_id]
@@ -219,8 +247,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
                     }), transfer["sender_id"])
                     pending_transfers.pop(transfer_id, None)
 
-            # ── WebRTC Signaling: just forward with sender_id injected ──
-            elif msg["type"] in ("webrtc_offer", "webrtc_answer", "webrtc_ice_candidate"):
+            # ── WebRTC Signaling ──────────────────────────────────────────────
+            elif mtype in ("webrtc_offer", "webrtc_answer", "webrtc_ice_candidate"):
                 target_id = msg.get("target_id")
                 if target_id and target_id in manager.active_connections:
                     forward = dict(msg)
@@ -228,15 +256,60 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, name: str):
                     forward.pop("target_id", None)
                     await manager.send_personal_message(json.dumps(forward), target_id)
 
+            # ── WebSocket Relay fallback (when WebRTC P2P fails) ──────────────
+            elif mtype == "relay_start":
+                # Sender signals it will relay file data through the server
+                transfer_id = msg["transfer_id"]
+                target_id   = msg.get("target_id")
+                if target_id and target_id in manager.active_connections:
+                    relay_sessions[transfer_id] = {
+                        "sender_id": client_id, "receiver_id": target_id
+                    }
+                    await manager.send_personal_message(json.dumps({
+                        "type": "relay_start",
+                        "transfer_id": transfer_id,
+                        "sender_id": client_id,
+                        "filename": msg["filename"],
+                        "size": msg["size"]
+                    }), target_id)
+
+            elif mtype == "relay_chunk":
+                # Forward raw base64 chunk to receiver
+                transfer_id = msg["transfer_id"]
+                session = relay_sessions.get(transfer_id)
+                if session and session["sender_id"] == client_id:
+                    await manager.send_personal_message(json.dumps({
+                        "type": "relay_chunk",
+                        "transfer_id": transfer_id,
+                        "data": msg["data"],
+                        "seq": msg.get("seq", 0)
+                    }), session["receiver_id"])
+
+            elif mtype == "relay_done":
+                transfer_id = msg["transfer_id"]
+                session = relay_sessions.pop(transfer_id, None)
+                if session and session["sender_id"] == client_id:
+                    await manager.send_personal_message(json.dumps({
+                        "type": "relay_done",
+                        "transfer_id": transfer_id
+                    }), session["receiver_id"])
+                pending_transfers.pop(transfer_id, None)
+
     except WebSocketDisconnect:
-        subnet = manager.disconnect(client_id)
-        if subnet:
-            await manager.broadcast_users(subnet)
+        manager.disconnect(client_id)
+        # Clean up any relay sessions this client was part of
+        stale = [tid for tid, s in relay_sessions.items()
+                 if s["sender_id"] == client_id or s["receiver_id"] == client_id]
+        for tid in stale:
+            relay_sessions.pop(tid, None)
+        await manager.broadcast_all_users()
+
 
 @app.get("/")
 async def get_index():
     with open("static/index.html", "r") as f:
         return HTMLResponse(content=f.read(), status_code=200)
+
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

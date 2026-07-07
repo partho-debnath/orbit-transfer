@@ -19,16 +19,20 @@ let pendingRequestFiles = new Map(); // filename+size → File
 let pendingFiles        = new Map(); // transfer_id → File (+ _ui key)
 
 // ── WebRTC Config ─────────────────────────────────────────────────────────────
+// STUN: discovers public IP. TURN: relays traffic when P2P fails (hairpin NAT, strict firewall).
 const ICE_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' }
+    // Free public TURN — fallback when direct P2P is blocked
+    { urls: 'turn:openrelay.metered.ca:80',      username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443',     username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
 ];
 const CHUNK_SIZE       = 16 * 1024;      // 16 KB — reliable across all browsers
 const BUFFER_HIGH      = 4 * 1024 * 1024; // 4 MB — pause sending
 const BUFFER_LOW       = 512 * 1024;      // 512 KB — resume sending
 const STALL_TIMEOUT_MS = 20_000;          // 20 s with no new bytes = stall
+const RELAY_CHUNK_SIZE = 32 * 1024;       // 32 KB base64 chunks through WebSocket relay
 
 const peerConnections      = {}; // pcKey → RTCPeerConnection
 const pendingIceCandidates = {}; // pcKey → [RTCIceCandidateInit]
@@ -36,6 +40,15 @@ const receiveState         = {}; // pcKey → { meta, chunks, bytesReceived, sta
 let   lastProgress         = {}; // transferId → { time, bytes }
 let   wakeLock             = null;
 const isMobile             = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+// ── WebSocket Relay State (fallback when WebRTC P2P fails) ────────────────────
+const relayReceiveState    = {}; // transferId → { filename, size, chunks, received }
+const relayFallbackPending = {}; // transferId → { rId, f, _timer }
+
+// On localhost (same machine), relay through the local server is instant — skip WebRTC entirely.
+const isLocalhost = ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+// Seconds before giving up on WebRTC and switching to server relay
+const ICE_TIMEOUT_MS = isLocalhost ? 0 : 6000;
 
 function makePcKey(transferId, peerId) { return `${transferId}__${peerId}`; }
 
@@ -75,7 +88,12 @@ function connect() {
             if (file) {
                 const waitId = pendingFiles.get(data.transfer_id + '_ui');
                 if (waitId) { const c = document.getElementById(`transfer-${waitId}`); if (c) c.remove(); }
-                initiateWebRTCTransfer(data.transfer_id, data.receiver_id, file);
+                if (isLocalhost) {
+                    // Localhost: relay through the local server is instant — skip WebRTC overhead
+                    sendFileViaRelay(data.transfer_id, data.receiver_id, file);
+                } else {
+                    initiateWebRTCTransfer(data.transfer_id, data.receiver_id, file);
+                }
             }
 
         } else if (data.type === 'transfer_declined') {
@@ -103,6 +121,38 @@ function connect() {
 
         } else if (data.type === 'webrtc_ice_candidate') {
             handleWebRTCIceCandidate(data);
+
+        // ── WebSocket relay (server-relayed fallback) ──────────────────────
+        } else if (data.type === 'relay_start') {
+            relayReceiveState[data.transfer_id] = {
+                filename: data.filename, size: data.size, chunks: [], received: 0
+            };
+            lastProgress[data.transfer_id] = { time: Date.now(), bytes: 0 };
+            requestWakeLock();
+            showTransferStatus(data.transfer_id, 'receiving', `Receiving ${data.filename}... (relay)`, 0, data.size);
+
+        } else if (data.type === 'relay_chunk') {
+            const rs = relayReceiveState[data.transfer_id];
+            if (!rs) return;
+            const bin = base64ToBuffer(data.data);
+            rs.chunks.push(bin);
+            rs.received += bin.byteLength;
+            updateTransferProgress(data.transfer_id, rs.received, rs.size);
+
+        } else if (data.type === 'relay_done') {
+            const rs = relayReceiveState[data.transfer_id];
+            if (!rs) return;
+            delete relayReceiveState[data.transfer_id];
+            const blob = new Blob(rs.chunks, { type: 'application/octet-stream' });
+            const url  = URL.createObjectURL(blob);
+            if (!isMobile) {
+                const a = document.createElement('a');
+                a.href = url; a.download = rs.filename;
+                document.body.appendChild(a); try { a.click(); } catch(_) {}
+                document.body.removeChild(a);
+            }
+            showTransferStatus(data.transfer_id, 'done', `Received ${rs.filename}`, 100, rs.size, url, rs.filename);
+            releaseWakeLock();
         }
     };
 
@@ -120,6 +170,10 @@ async function initiateWebRTCTransfer(transferId, receiverId, file) {
     dc.bufferedAmountLowThreshold = BUFFER_LOW; // fires onbufferedamountlow
 
     dc.onopen = async () => {
+        // Data channel opened — WebRTC P2P or TURN succeeded; cancel the relay fallback timer
+        const pending = relayFallbackPending[transferId];
+        if (pending?._timer) clearTimeout(pending._timer);
+        delete relayFallbackPending[transferId];
         showTransferStatus(transferId, 'uploading', `Sending ${file.name}...`, 0, file.size);
         try {
             await sendFileViaDataChannel(dc, file, transferId);
@@ -143,27 +197,41 @@ async function initiateWebRTCTransfer(transferId, receiverId, file) {
         }));
     };
 
-    // Recover from mid-transfer ICE drops
+    // ICE state handler — triggers relay fallback on failure OR disconnect
+    const triggerRelayFallback = (reason) => {
+        if (!relayFallbackPending[transferId]) return; // already handled
+        const { rId, f } = relayFallbackPending[transferId];
+        delete relayFallbackPending[transferId];
+        closePeerConnection(pcKey);
+        releaseWakeLock();
+        showTransferStatus(transferId, 'receiving', `${reason} — switching to server relay for ${f.name}...`, 0, f.size);
+        sendFileViaRelay(transferId, rId, f);
+    };
+
     pc.oniceconnectionstatechange = () => {
         const s = pc.iceConnectionState;
-        if (s === 'failed') {
-            try { pc.restartIce(); } catch (_) {}
-            setTimeout(() => {
-                if (pc.iceConnectionState === 'failed') {
-                    showTransferStatus(transferId, 'error', `Connection lost: ${file.name}`);
-                    closePeerConnection(pcKey);
-                    releaseWakeLock();
-                }
-            }, 5000);
+        if (s === 'connected' || s === 'completed') {
+            // WebRTC P2P or TURN relay succeeded — cancel the relay fallback timer
+            if (relayFallbackPending[transferId]?._timer)
+                clearTimeout(relayFallbackPending[transferId]._timer);
+            delete relayFallbackPending[transferId];
+        } else if (s === 'failed') {
+            triggerRelayFallback('WebRTC failed');
         } else if (s === 'disconnected') {
+            // Mobile browsers often stay 'disconnected' and never reach 'failed'
             setTimeout(() => {
-                if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-                    showTransferStatus(transferId, 'error', `Connection lost: ${file.name}`);
-                    closePeerConnection(pcKey);
-                }
-            }, 8000);
+                if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')
+                    triggerRelayFallback('Connection lost');
+            }, 4000);
         }
     };
+
+    // Hard timeout: if ICE hasn't connected in ICE_TIMEOUT_MS, switch to relay.
+    // 6 s is enough for STUN/TURN to respond over the internet.
+    const iceTimer = ICE_TIMEOUT_MS > 0
+        ? setTimeout(() => triggerRelayFallback('WebRTC timed out'), ICE_TIMEOUT_MS)
+        : null;
+    relayFallbackPending[transferId] = { rId: receiverId, f: file, _timer: iceTimer };
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -247,17 +315,15 @@ async function handleWebRTCOffer(data) {
         }));
     };
 
-    // Recover on receiver side too
+    // Receiver ICE monitor — just clean up; relay kicks in automatically from sender side
     pc.oniceconnectionstatechange = () => {
         const s = pc.iceConnectionState;
-        if (s === 'failed') {
-            try { pc.restartIce(); } catch (_) {}
+        if (s === 'failed' || s === 'disconnected') {
             setTimeout(() => {
-                if (pc.iceConnectionState === 'failed') {
+                if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
                     const st = receiveState[pcKey];
-                    const name = st?.meta?.filename || 'file';
                     clearTimeout(st?.stallTimer);
-                    showTransferStatus(transfer_id, 'error', `Connection lost: ${name}`);
+                    // Don't show error yet — the sender will switch to relay and we'll get relay_start
                     delete receiveState[pcKey];
                     closePeerConnection(pcKey);
                 }
@@ -342,14 +408,12 @@ function setupReceiveDataChannel(dc, transferId, senderId) {
                 const url  = URL.createObjectURL(blob);
 
                 if (!isMobile) {
-                    // Desktop: auto-download via a hidden link in a new tab (safe, won't navigate away)
+                    // Desktop: simple hidden-link click — reliably triggers Save dialog
                     const a = document.createElement('a');
                     a.href = url;
                     a.download = state.meta.filename;
-                    a.target = '_blank';
-                    a.rel = 'noopener';
                     document.body.appendChild(a);
-                    try { a.click(); } catch(e) { console.warn('Auto-download blocked', e); }
+                    a.click();
                     document.body.removeChild(a);
                 }
                 // Mobile: NEVER auto-click — it navigates the tab away from the app.
@@ -859,6 +923,51 @@ document.getElementById('username').onchange = (e) => {
     userName = e.target.value; localStorage.setItem('orbit_user_name', userName);
     ws.send(JSON.stringify({ type:'change_name', name:userName }));
 };
+
+// ── WebSocket Relay (fallback sender) ────────────────────────────────────────
+async function sendFileViaRelay(transferId, receiverId, file) {
+    requestWakeLock();
+    showTransferStatus(transferId, 'uploading', `Sending ${file.name} via relay...`, 0, file.size);
+    lastProgress[transferId] = { time: Date.now(), bytes: 0 };
+
+    // Signal receiver to prepare
+    ws.send(JSON.stringify({
+        type: 'relay_start', transfer_id: transferId, target_id: receiverId,
+        filename: file.name, size: file.size
+    }));
+
+    let bytesSent = 0;
+    for (let offset = 0; offset < file.size; offset += RELAY_CHUNK_SIZE) {
+        const slice = await file.slice(offset, offset + RELAY_CHUNK_SIZE).arrayBuffer();
+        ws.send(JSON.stringify({
+            type: 'relay_chunk', transfer_id: transferId, target_id: receiverId,
+            seq: Math.floor(offset / RELAY_CHUNK_SIZE),
+            data: bufferToBase64(slice)
+        }));
+        bytesSent += slice.byteLength;
+        updateTransferProgress(transferId, bytesSent, file.size);
+        // Yield to event loop so the UI stays responsive
+        await new Promise(r => setTimeout(r, 0));
+    }
+
+    ws.send(JSON.stringify({ type: 'relay_done', transfer_id: transferId, target_id: receiverId }));
+    showTransferStatus(transferId, 'done', `Sent ${file.name}`, 100, file.size);
+    releaseWakeLock();
+}
+
+// ── Base64 helpers ────────────────────────────────────────────────────────────
+function bufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+}
+function base64ToBuffer(b64) {
+    const binary = atob(b64);
+    const bytes  = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+}
 
 connect();
 
