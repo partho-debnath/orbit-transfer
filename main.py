@@ -1,5 +1,6 @@
 import uuid
 import os
+import ipaddress
 from typing import Dict
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse
@@ -38,12 +39,21 @@ class ConnectionManager:
             trigger_info = self.active_connections.get(trigger_client_id)
             if not trigger_info:
                 return
-            trigger_ip = trigger_info["ip"]
-            # Simple /24 subnet grouping
-            trigger_subnet = ".".join(trigger_ip.split(".")[:3])
+            
+            def get_network(ip_str: str) -> str:
+                try:
+                    ip = ipaddress.ip_address(ip_str)
+                    if ip.version == 4:
+                        return str(ipaddress.ip_network(f"{ip_str}/24", strict=False))
+                    else:
+                        return str(ipaddress.ip_network(f"{ip_str}/64", strict=False))
+                except ValueError:
+                    return ip_str # Fallback for invalid IPs
+            
+            trigger_subnet = get_network(trigger_info["ip"])
             clients = {
                 cid: info for cid, info in self.active_connections.items()
-                if ".".join(info["ip"].split(".")[:3]) == trigger_subnet
+                if get_network(info["ip"]) == trigger_subnet
             }
         else:
             clients = self.active_connections
